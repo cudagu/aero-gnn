@@ -49,16 +49,27 @@ class AeroInference:
         """Predict for a single data sample."""
         data = data.to(self.device)
         
-        # Check if model needs batch parameter (for poolMGN, MeshGraphNet_v2)
+        # Check if model needs batch parameter (for poolMGN, MeshGraphNet_v2, BiStridedMeshGraphNet)
         model_class = self.model.__class__.__name__
         if model_class in ['poolMGN', 'MeshGraphNet_v2']:
             # For single graph inference, create a batch tensor of zeros
             batch = torch.zeros(data.x.size(0), dtype=torch.long, device=self.device)
             pred_scaled = self.model(data.x, data.edge_attr, data.edge_index, batch)
-            
+
+        elif model_class in ['BiStridedMeshGraphNet']:
+            batch = torch.zeros(data.x.size(0), dtype=torch.long, device=self.device)
+            pos = data.pos if hasattr(data, 'pos') else None
+            pred_scaled = self.model(
+                data.x,
+                data.edge_attr,
+                data.edge_index,
+                batch=batch,
+                pos=pos,
+            )
+
         elif model_class in ['MLPNet']:
             pred_scaled = self.model(data.x)
-    
+
         else:
             pred_scaled = self.model(data.x, data.edge_attr, data.edge_index)
         

@@ -50,6 +50,22 @@ model:
     dropout: 0.0
     do_concat_trick: True
 
+  bsms_mgn:
+    processor_size: 15
+    activation_fn: "relu"
+    hidden_dim: 128
+    aggregation: "add"
+    num_hidden_layers_decoder: 2
+    num_hidden_layers_node_encoder: 2
+    num_hidden_layers_edge_encoder: 2
+    num_hidden_layers_node_processor: 2
+    num_hidden_layers_edge_processor: 2
+    dropout: 0.0
+    do_concat_trick: True
+    num_scales: 3
+    layers_per_scale: 2
+    stride: 2
+
   fouriermgn:
     processor_size: 15
     activation_fn: "relu"

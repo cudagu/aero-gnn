@@ -174,10 +174,14 @@ def train(model, loader, optimizer, loss_fn, device):
     for batch in loader:
         batch = batch.to(device)
         
-        # Check if model needs batch parameter (for poolMGN and MeshGraphNet_v2)
+        # Check if model needs batch parameter (for poolMGN, MeshGraphNet_v2, BiStridedMeshGraphNet)
         model_class = model.__class__.__name__
         if model_class in ['poolMGN', 'MeshGraphNet_v2']:
             pred = model(batch.x, batch.edge_attr, batch.edge_index, batch.batch)
+
+        elif model_class in ['BiStridedMeshGraphNet']:
+            pos = batch.pos if hasattr(batch, 'pos') else None
+            pred = model(batch.x, batch.edge_attr, batch.edge_index, batch=batch.batch, pos=pos)
 
         elif model_class in ['MLPNet']:
             pred = model(batch.x)
@@ -198,10 +202,13 @@ def evaluate(model, loader, loss_fn, device):
     for batch in loader:
         batch = batch.to(device)
         
-        # Check if model needs batch parameter (for poolMGN and MeshGraphNet_v2)
+        # Check if model needs batch parameter (for poolMGN, MeshGraphNet_v2, BiStridedMeshGraphNet)
         model_class = model.__class__.__name__
         if model_class in ['poolMGN', 'MeshGraphNet_v2']:
             pred = model(batch.x, batch.edge_attr, batch.edge_index, batch.batch)
+        elif model_class in ['BiStridedMeshGraphNet']:
+            pos = batch.pos if hasattr(batch, 'pos') else None
+            pred = model(batch.x, batch.edge_attr, batch.edge_index, batch=batch.batch, pos=pos)
         elif model_class in ['MLPNet']:
             pred = model(batch.x)
         else:
@@ -295,7 +302,32 @@ def load_model_and_data(training_output_dir: str):
             num_hidden_layers_decoder=model_config.get('num_hidden_layers_decoder'),
             dropout=model_config.get('dropout')
         )
-    
+
+    elif model_name.lower() in ['bsms_mgn', 'bsms', 'bsms-mgn']:
+        from models.bsms_mgn import BiStridedMeshGraphNet
+        model = BiStridedMeshGraphNet(
+            input_node_dim=input_node_dim,
+            input_edge_dim=input_edge_dim,
+            output_node_dim=output_node_dim,
+            processor_size=model_config.get('processor_size'),
+            activation_fn=model_config.get('activation_fn'),
+            num_hidden_layers_node_processor=model_config.get('num_hidden_layers_node_processor'),
+            num_hidden_layers_edge_processor=model_config.get('num_hidden_layers_edge_processor'),
+            hidden_dim_processor=model_config.get('hidden_dim'),
+            num_hidden_layers_node_encoder=model_config.get('num_hidden_layers_node_encoder'),
+            hidden_dim_node_encoder=model_config.get('hidden_dim'),
+            num_hidden_layers_edge_encoder=model_config.get('num_hidden_layers_edge_encoder'),
+            hidden_dim_edge_encoder=model_config.get('hidden_dim'),
+            aggregation=model_config.get('aggregation'),
+            hidden_dim_decoder=model_config.get('hidden_dim'),
+            num_hidden_layers_decoder=model_config.get('num_hidden_layers_decoder'),
+            dropout=model_config.get('dropout'),
+            do_concat_trick=model_config.get('do_concat_trick', False),
+            num_scales=model_config.get('num_scales', 3),
+            layers_per_scale=model_config.get('layers_per_scale', 2),
+            stride=model_config.get('stride', 2),
+        )
+
     elif model_name.lower() in ['poolmgn']:
         from models.poolmgn import poolMGN
         model = poolMGN(
