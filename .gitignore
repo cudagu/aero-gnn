@@ -1,0 +1,9 @@
+/.vscode
+/BSMS-GNN
+/__pycache__
+/docs
+/dummy.py
+/example_bsms_train.py
+/training_runs
+/visualize_bsms.py
+/wandb

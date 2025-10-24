@@ -1,0 +1,217 @@
+#dataset config
+dataset:
+  airfoil_2d:
+    data_dir: None
+    input_features: ["x", "y", "nx", "ny"]
+    output_features: ["P", "tau_x", "tau_y", "T"]
+    invar_keys: ["pos", "normals", "edge_index", "y", "airfoil_name"]
+    var_keys: ["mach", "alpha"]
+    mach: [0.3, 2]
+    alpha: [-10, 10]
+
+  ahmed_body:
+    data_dir: None
+    input_features: ["x", "y", "z", "nx", "ny", "nz"]
+    output_features: ["P", "tau_x", "tau_y", "tau_z"]
+    invar_keys: ["velocity", "pos", "normals", "edge_index", "y", "case_no"]
+    var_keys: ["Length", "Height", "Width", "Slant_angle", "Ground_clearance", "FilletRadius", "Velocity", "Re (based on length)"]
+    # Note: ahmed_body dataset is pre-split into train/validation/test directories
+
+  missile_3d1:
+    data_dir: None
+    input_features: ["x", "y", "z", "nx", "ny", "nz"]
+    output_features: ["P", "tau_x", "tau_y", "tau_z", "T"]
+    invar_keys: ["pos", "normals", "edge_index", "y", "design_no"]
+    var_keys: ["mach", "alpha", "beta"]
+    mach: [0.85]
+    alpha: [0]
+    beta: [0]
+
+# Model configuration
+model:
+
+  mlpnet:
+    num_hidden_layers_encoder: 3
+    hidden_dim: 128
+    num_hidden_layers_decoder: 3
+    dropout: 0.0
+    activation: "relu"
+
+  meshgraphnet:
+    processor_size: 15
+    activation_fn: "relu"
+    hidden_dim: 128
+    aggregation: "add"
+    num_hidden_layers_decoder: 2
+    num_hidden_layers_node_encoder: 2
+    num_hidden_layers_edge_encoder: 2
+    num_hidden_layers_node_processor: 2
+    num_hidden_layers_edge_processor: 2
+    dropout: 0.0
+    do_concat_trick: True
+
+  fouriermgn:
+    processor_size: 15
+    activation_fn: "relu"
+    hidden_dim: 128
+    aggregation: "add"
+    num_hidden_layers_decoder: 2
+    num_hidden_layers_node_encoder: 2
+    num_hidden_layers_edge_encoder: 2
+    num_hidden_layers_node_processor: 2
+    num_hidden_layers_edge_processor: 2
+    dropout: 0.0
+    fourier_features_dim: 2
+    fourier_freq_start: -3
+    fourier_freq_length: 7
+    
+  poolMGN:
+    processor_size: 15
+    activation_fn: "relu"
+    hidden_dim: 128
+    aggregation: "add"
+    num_hidden_layers_decoder: 2
+    num_hidden_layers_node_encoder: 2
+    num_hidden_layers_edge_encoder: 2
+    num_hidden_layers_node_processor: 2
+    num_hidden_layers_edge_processor: 2
+    global_pool_method: "mean"  # options: "mean", "max", "sum"
+    num_hidden_layers_global_encoder: 2
+    global_dim: 128
+    dropout: 0.0
+
+  trial1:
+    number_of_encoding_layers: 3
+    num_message_passing_layers: 15
+    number_of_decoding_layers: 2
+    hidden_dim: 128
+    dropout: 0.0
+    activation: "relu"
+
+
+# Training configuration
+training:
+  default:
+    batch_size: 32
+    epochs: 50
+    learning_rate: 0.001
+    lr_scheduler_step_size: 50
+    lr_scheduler_gamma: 0.8
+    weight_decay: 0.0
+    validation_split: 0.1  
+    test_split: 0.1        
+    train_num_samples: None
+    val_num_samples: None
+    test_num_samples: None
+    shuffle: True
+    random_seed: 42
+    precision: "single"
+    device: "cuda:0"
+    loss_function: "MSELoss"
+    early_stopping: True
+    patience: 200
+
+experiments:
+
+  airfoil_mlp:
+    dataset: airfoil_2d
+    model: mlpnet
+    training: default
+    mach: [0.86]
+    alpha: [3]
+    data_dir: /home/hakan/MEGA/GNN/data/Airfoil_2d/raw
+    batch_size: 32
+    epochs: 1000
+    random_seed: 402
+    test_split: 0.2
+
+  airfoil_mgn:
+    dataset: airfoil_2d
+    model: meshgraphnet
+    training: default
+    mach: [0.86]
+    alpha: [3]
+    data_dir: /home/hakan/MEGA/GNN/data/Airfoil_2d/raw
+    batch_size: 32
+    epochs: 1000
+    random_seed: 402
+    test_split: 0.2
+
+  airfoil_pooling_mgn:
+    dataset: airfoil_2d
+    model: poolMGN
+    training: default
+    mach: [0.86]
+    alpha: [3]
+    data_dir: /home/hakan/MEGA/GNN/data/Airfoil_2d/raw
+    batch_size: 32
+    epochs: 1000
+    random_seed: 402
+    test_split: 0.2
+
+  airfoil_fourier_mgn:
+    dataset: airfoil_2d
+    model: fouriermgn
+    training: default
+    mach: [0.86]
+    alpha: [3]
+    data_dir: /home/hakan/MEGA/GNN/data/Airfoil_2d/raw
+    batch_size: 32
+    epochs: 1000
+    random_seed: 402
+    test_split: 0.2
+  
+
+  ahmedBody_pooling_mgn:
+    dataset: ahmed_body
+    model: poolMGN
+    training: default
+    data_dir: /home/hakan/MEGA/GNN/data/ahmedBody/raw
+    batch_size: 1
+    epochs: 250
+    train_num_samples: 50
+    val_num_samples: 5
+    test_num_samples: 5
+    hidden_dim: 32
+
+  ahmedBody_mgn:
+    dataset: ahmed_body
+    model: meshgraphnet
+    training: default
+    data_dir: /home/hakan/MEGA/GNN/data/ahmedBody/raw
+    batch_size: 2
+    epochs: 500
+    train_num_samples: 50
+    val_num_samples: 5
+    test_num_samples: 5
+    hidden_dim: 32
+  
+  ahmedBody_fourier_mgn:
+    dataset: ahmed_body
+    model: fouriermgn
+    training: default
+    data_dir: /home/hakan/MEGA/GNN/data/ahmedBody/raw
+    batch_size: 1
+    epochs: 500
+    train_num_samples: 50
+    val_num_samples: 5
+    test_num_samples: 5
+    hidden_dim: 32
+
+
+  ahmedBody_mgn_trial:
+    dataset: ahmed_body
+    model: trial1
+    training: default
+    data_dir: /home/hakan/MEGA/GNN/data/ahmedBody/raw
+    batch_size: 2
+    epochs: 500
+    train_num_samples: 100
+    val_num_samples: 5
+    test_num_samples: 5
+    hidden_dim: 32
+
+  missile3d1:
+    dataset: missile_3d_1
+    model: meshgraphnet
+    training: default
