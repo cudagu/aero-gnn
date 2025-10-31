@@ -17,7 +17,11 @@ from collections import defaultdict
 #%%Main
 def main(params):
     # Set up precision (float32 or float64)
+    # For bfloat16, we use automatic mixed precision (AMP) instead of casting data
     precision = params['training'].get('precision').lower()
+    use_amp = False  # Flag for automatic mixed precision
+    amp_dtype = None  # AMP dtype for autocast
+
     if precision in ['double', 'float64']:
         torch.set_default_dtype(torch.float64)
         dtype = torch.float64
@@ -26,47 +30,62 @@ def main(params):
         torch.set_default_dtype(torch.float32)
         dtype = torch.float32
         print("Using single precision (float32)")
-        
+
     elif precision in ['bf16', 'bfloat16']:
-        torch.set_default_dtype(torch.bfloat16)
-        dtype = torch.bfloat16
-        print("Using bfloat16 precision")
-        
-    elif precision in ['float16', 'fp16', 'half']:
-        torch.set_default_dtype(torch.float16)
-        dtype = torch.float16
-        print("Using float16 precision")
+        # For bfloat16, keep data in float32 and use AMP for operations
+        torch.set_default_dtype(torch.float32)
+        dtype = torch.float32
+        use_amp = True
+        amp_dtype = torch.bfloat16
+        print("Using automatic mixed precision with bfloat16")
+        print("  - Data: float32 (preserves precision)")
+        print("  - Operations: bfloat16 (faster computation)")
+
     else:
         raise ValueError(f"Unknown precision type: {precision}. Supported types: 'float32', 'float64', 'bfloat16', 'single'")
     
     #instantiate dataset
     train_set, val_set, test_set, norm_stats = create_datasets(
-        data_dir=params['dataset']['data_dir'], 
-        dataset_type=params['dataset']['name'], 
+        data_dir=params['dataset']['data_dir'],
+        dataset_type=params['dataset']['name'],
         params=params,
         dtype=dtype
     )
 
-    train_loader = DataLoader(train_set, batch_size=params['training']['batch_size'], shuffle=True)
-    val_loader = DataLoader(val_set, batch_size=params['training']['batch_size'])
+    # Check if using BSMS model which requires special data preprocessing
+    model_name = params['model']['name']
+    if model_name == 'bsms_mgn':
+        from models.bsms_dataset_wrapper import BSMSDataLoader, prepare_bsms_data
+
+        print("\n=== Preprocessing Multi-Scale Graphs for BSMS ===")
+        num_levels = params['model'].get('num_levels', 3)
+
+        train_set = prepare_bsms_data(train_set, num_levels=num_levels)
+        val_set = prepare_bsms_data(val_set, num_levels=num_levels)
+        test_set = prepare_bsms_data(test_set, num_levels=num_levels)
+
+        train_loader = BSMSDataLoader(train_set, batch_size=1, shuffle=True)
+        val_loader = BSMSDataLoader(val_set, batch_size=1, shuffle=False)
+    else:
+        train_loader = DataLoader(train_set, batch_size=params['training']['batch_size'], shuffle=True)
+        val_loader = DataLoader(val_set, batch_size=params['training']['batch_size'])
 
 
     device = torch.device(params["training"]["device"] if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
-    
+
     # Get feature dimensions from the first data sample
-    sample_loader = DataLoader(train_set, batch_size=1, shuffle=False)
-    sample_batch = next(iter(sample_loader))
+    sample_batch = next(iter(train_loader))
     input_node_dim = sample_batch.x.shape[1]
-    input_edge_dim = sample_batch.edge_attr.shape[1] 
+    input_edge_dim = sample_batch.edge_attr.shape[1]
     output_node_dim = sample_batch.y.shape[1]
-    
+    pos_dim = sample_batch.pos.shape[1] if hasattr(sample_batch, 'pos') else 2
+
     # print(f"Input node features: {input_node_dim}")
     # print(f"Input edge features: {input_edge_dim}")
     # print(f"Output dimension: {output_node_dim}")
-    
-    # Model instantiation based on configuration
-    model_name = params['model']['name']
+
+    # Model instantiation based on configuration (model_name already defined above)
     model_config = params['model']
     
     if model_name == 'MLP' or model_name == 'mlpnet':
@@ -162,17 +181,34 @@ def main(params):
                 num_decoder_layers=model_config.get('number_of_decoding_layers'),
                 dropout=model_config.get('dropout')
                 )
-    
+
+    elif model_name == 'bsms_mgn':
+        from models.bsms_mgn import BSMS_MeshGraphNet
+        model = BSMS_MeshGraphNet(
+            input_node_dim=input_node_dim,
+            input_edge_dim=input_edge_dim,
+            output_node_dim=output_node_dim,
+            num_levels=model_config.get('num_levels', 3),
+            latent_dim=model_config.get('hidden_dim', 128),
+            hidden_dim=model_config.get('hidden_dim', 128),
+            pos_dim=pos_dim,
+            num_hidden_layers_encoder=model_config.get('num_hidden_layers_encoder', 2),
+            num_hidden_layers_decoder=model_config.get('num_hidden_layers_decoder', 2),
+            activation_fn=model_config.get('activation_fn', 'relu'),
+            dropout=model_config.get('dropout', 0.0)
+        )
+
     else:
-        raise ValueError(f"Unknown model type: {model_name}. Available models: 'MLP', 'meshgraphnet', 'initialglobalmgn', 'trial1'")
+        raise ValueError(f"Unknown model type: {model_name}. Available models: 'MLP', 'meshgraphnet', 'poolMGN', 'fouriermgn', 'trial1', 'bsms_mgn'")
         
     print(model)
-    
+
     # Convert model to correct precision
+    # Note: For bfloat16 with AMP, we keep the model in float32
     if dtype == torch.float64:
         model = model.double()
         print("Model converted to double precision")
-    
+
     model = model.to(device)
     print(f"Model moved to {device}")
     print(f"Total parameters: {sum(p.numel() for p in model.parameters()):,}")
@@ -186,13 +222,42 @@ def main(params):
         weight_decay=training_config.get('weight_decay')
     )
     
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer,
-        mode='min',
-        factor=training_config.get('lr_scheduler_gamma'),
-        patience=training_config.get('lr_scheduler_step_size'),
-        min_lr=1e-7
-    )
+
+    if training_config.get('scheduler') == 'ExponentialLR':
+        scheduler = torch.optim.lr_scheduler.ExponentialLR(
+            optimizer,
+            gamma=training_config.get('lr_scheduler_exp_gamma')
+        )
+    elif training_config.get('scheduler') == 'CosineAnnealingLR':
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=training_config.get('epochs'),
+            eta_min=1e-7
+        )
+    elif training_config.get('scheduler') == 'CosineAnnealingWarmRestarts':
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+            optimizer,
+            T_0=training_config.get('lr_scheduler_T_0'),
+            T_mult=1,
+            eta_min=1e-7
+        )
+    elif training_config.get('scheduler') == 'ReduceLROnPlateau':
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer,
+            mode='min',
+            factor=training_config.get('lr_scheduler_gamma'),
+            patience=training_config.get('lr_scheduler_step_size'),
+            min_lr=1e-7
+        )
+    elif training_config.get('scheduler') == "Warmup":
+        from utils import WarmupCosineDecayScheduler
+        scheduler = WarmupCosineDecayScheduler(
+            optimizer,
+            warmup=training_config.get('warmup_steps', 100),
+            max_iters=training_config.get('epochs')
+        )
+    else:
+        raise ValueError(f"Unknown scheduler type: {training_config.get('scheduler')}. Supported types: 'ExponentialLR', 'ReduceLROnPlateau', 'CosineAnnealingLR', 'CosineAnnealingWarmRestarts'")  
     
     loss_fn = nn.MSELoss()
 
@@ -202,15 +267,19 @@ def main(params):
         
         train_losses = []
         val_losses = []
+        lr_list = []
         iterator = tqdm(range(training_config['epochs']))
         val_loss_min = float('inf')
         patience_counter = 0
         
         for epoch in iterator:
-            
-            train_loss = train(model, train_loader, optimizer, loss_fn, device)
-            val_loss = evaluate(model, val_loader, loss_fn, device)
-            scheduler.step(val_loss)
+
+            train_loss = train(model, train_loader, optimizer, loss_fn, device, use_amp=use_amp, amp_dtype=amp_dtype)
+            val_loss = evaluate(model, val_loader, loss_fn, device, use_amp=use_amp, amp_dtype=amp_dtype)
+            if training_config.get('scheduler') == 'ReduceLROnPlateau':
+                scheduler.step(val_loss)
+            else:
+                scheduler.step()
             current_lr = optimizer.param_groups[0]['lr']
             iterator.set_postfix(Loss=train_loss, Val_Loss=val_loss, lr=current_lr)
             
@@ -227,6 +296,7 @@ def main(params):
                         
             train_losses.append(train_loss)
             val_losses.append(val_loss)
+            lr_list.append(current_lr)
         
         print("\nTraining complete.")
         
@@ -269,9 +339,11 @@ def main(params):
             'final_train_loss': train_losses[-1] if train_losses else 0.0,
             'final_val_loss': val_losses[-1] if val_losses else 0.0,
             'best_val_loss': min(val_losses) if val_losses else 0.0,
+            'final_lr': lr_list[-1] if lr_list else 0.0,
             'total_epochs': len(train_losses),
             'train_losses': train_losses,
             'val_losses': val_losses,
+            'learning_rates': lr_list
         }
         
         with open(os.path.join(save_dir, "training_losses.json"), "w") as f:
@@ -299,7 +371,19 @@ def main(params):
         plt.tight_layout()
         plt.savefig(os.path.join(save_dir, "training_loss_plot.png"), dpi=300, bbox_inches='tight')
         plt.close()
-        # print(f"High-resolution loss plot saved to {save_dir}/training_loss_plot.png")
+        
+        
+        plt.figure(figsize=(12, 8))
+        plt.plot(lr_list, label='Learning Rate', linewidth=2, color='green')
+        plt.xlabel('Epoch', fontsize=14)
+        plt.ylabel('Learning Rate', fontsize=14)
+        scheduler_type = training_config.get('scheduler')
+        plt.title(f'Learning Rate Schedule - {scheduler_type}', fontsize=16)
+        plt.legend(fontsize=12)
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(os.path.join(save_dir, "learning_rate_schedule.png"), dpi=300, bbox_inches='tight')
+        plt.close() 
         
         # Save summary text file
         with open(os.path.join(save_dir, "training_summary.txt"), "w") as f:
@@ -361,6 +445,14 @@ def main(params):
                 f.write(f"  Train airfoils: {train_airfoil_names}\n")
                 f.write(f"  Validation airfoils: {val_airfoil_names}\n")
                 f.write(f"  Test airfoils: {test_airfoil_names}\n\n")
+            elif params['dataset']['name'] == 'ahmed_body':
+                train_case_names = list(set(data.case_name for data in train_set if hasattr(data, 'case_name')))
+                val_case_names = list(set(data.case_name for data in val_set if hasattr(data, 'case_name')))
+                test_case_names = list(set(data.case_name for data in test_set if hasattr(data, 'case_name')))
+                
+                f.write(f"  Train cases: {train_case_names}\n")
+                f.write(f"  Validation cases: {val_case_names}\n")
+                f.write(f"  Test cases: {test_case_names}\n\n")
 
         print(f"Training summary saved to {save_dir}/training_summary.txt")
         print(f"\nAll outputs saved to: {save_dir}")
@@ -374,10 +466,10 @@ def main(params):
     try:
         from inference import AeroInference
         print("Running inference on test set...")
-        
-        # Create inference engine
-        inference_engine = AeroInference(model, norm_stats, device, params)
-        
+
+        # Create inference engine with AMP settings
+        inference_engine = AeroInference(model, norm_stats, device, params, use_amp=use_amp, amp_dtype=amp_dtype)
+
         # Run inference and save results
         inference_dir = inference_engine.run_inference(test_set, save_dir, params['dataset'].get('data_dir'))
         print(f"Inference results saved to {inference_dir}")

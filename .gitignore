@@ -7,3 +7,12 @@
 /training_runs
 /visualize_bsms.py
 /wandb
+Precision_comparison.xlsx
+bsms_hierarchy_airfoil_2d.png
+bsms_hierarchy.png
+CLAUDE.md
+models/__pycache__/bsms_mgn.cpython-311.pyc
+models/__pycache__/bsms_dataset_wrapper.cpython-311.pyc
+report_multiscale_properties.py
+.gitignore
+models/BSMS_README.md

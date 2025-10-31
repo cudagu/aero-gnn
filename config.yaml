@@ -88,6 +88,14 @@ model:
     dropout: 0.0
     activation: "relu"
 
+  bsms_mgn:
+    num_levels: 3  # Number of coarsening levels
+    hidden_dim: 128
+    num_hidden_layers_encoder: 2
+    num_hidden_layers_decoder: 2
+    activation_fn: "relu"
+    dropout: 0.0
+
 
 # Training configuration
 training:
@@ -95,8 +103,12 @@ training:
     batch_size: 32
     epochs: 50
     learning_rate: 0.001
+    scheduler: "ExponentialLR"  # options: "ExponentialLR", "ReduceLROnPlateau", "CosineAnnealingLR", "CosineAnnealingWarmRestarts", "Warmup"
+    warmup_steps: 100
+    lr_scheduler_exp_gamma: 0.9985
     lr_scheduler_step_size: 50
     lr_scheduler_gamma: 0.8
+    lr_scheduler_T_0: 10
     weight_decay: 0.0
     validation_split: 0.1  
     test_split: 0.1        
@@ -105,7 +117,7 @@ training:
     test_num_samples: None
     shuffle: True
     random_seed: 42
-    precision: "single"
+    precision: "bfloat16"  # options: "single", "double", "bfloat16"
     device: "cuda:0"
     loss_function: "MSELoss"
     early_stopping: True
@@ -160,15 +172,41 @@ experiments:
     epochs: 1000
     random_seed: 402
     test_split: 0.2
-  
+
+  airfoil_bsms_mgn:
+    dataset: airfoil_2d
+    model: bsms_mgn
+    training: default
+    mach: [0.86]
+    alpha: [3]
+    data_dir: /home/hakan/MEGA/GNN/data/Airfoil_2d/raw
+    batch_size: 1  # BSMS requires batch_size=1
+    epochs: 1000
+    random_seed: 402
+    test_split: 0.2
+    num_levels: 6
+
+  ahmedBody_bsms_mgn:
+    dataset: ahmed_body
+    model: bsms_mgn
+    training: default
+    data_dir: /home/hakan/MEGA/GNN/data/ahmedBody/raw
+    batch_size: 1
+    epochs: 500
+    train_num_samples: 408
+    val_num_samples: 50
+    test_num_samples: 50
+    hidden_dim: 32
+    num_levels: 3
+
 
   ahmedBody_pooling_mgn:
     dataset: ahmed_body
     model: poolMGN
     training: default
     data_dir: /home/hakan/MEGA/GNN/data/ahmedBody/raw
-    batch_size: 1
-    epochs: 250
+    batch_size: 2
+    epochs: 500
     train_num_samples: 50
     val_num_samples: 5
     test_num_samples: 5

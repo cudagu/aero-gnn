@@ -30,36 +30,59 @@ BSMS-GNN uses **bistride pooling** - a novel graph coarsening strategy that:
    - `BSMSDataLoader`: Simple data loader for BSMS
    - `prepare_bsms_data()`: Helper function
 
-4. **`example_bsms_train.py`** - Training example:
-   - Complete training loop
-   - Shows integration with your existing setup
-
 ## Quick Start
 
-### 1. Basic Usage
+### Training with BSMS
+
+BSMS is fully integrated into the main training pipeline. Simply use an experiment configured with `model: bsms_mgn`:
+
+```bash
+# Train using the BSMS model
+python train.py --exp airfoil_bsms_mgn
+```
+
+The training script automatically:
+1. Wraps datasets with multi-scale preprocessing
+2. Uses BSMS-compatible data loaders
+3. Handles the multi_data dict during training
+4. Saves model weights and normalization stats
+
+### Configuration
+
+Update your experiment in `config.yaml`:
+
+```yaml
+experiments:
+  airfoil_bsms_mgn:
+    dataset: airfoil_2d
+    model: bsms_mgn
+    training: default
+    mach: [0.86]
+    alpha: [3]
+    data_dir: /path/to/data
+    batch_size: 1  # BSMS requires batch_size=1
+    epochs: 1000
+    random_seed: 402
+    test_split: 0.2
+    num_levels: 3  # Number of coarsening levels
+```
+
+### Manual Usage (Advanced)
+
+If you need to use BSMS outside the main pipeline:
 
 ```python
 from dataset import AeroDataset
 from models.bsms_mgn import BSMS_MeshGraphNet
 from models.bsms_dataset_wrapper import prepare_bsms_data, BSMSDataLoader
 
-# Create your dataset
-dataset = AeroDataset(
-    data_dir='path/to/data',
-    dataset_type='airfoil_2d',
-    params=config
-)
-
-# Wrap with multi-scale preprocessing
+# Create and wrap dataset
+dataset = AeroDataset(data_dir='path/to/data', dataset_type='airfoil_2d', params=config)
 bsms_dataset = prepare_bsms_data(dataset, num_levels=3)
-
-# Create loader
 loader = BSMSDataLoader(bsms_dataset, batch_size=1, shuffle=True)
 
-# Get sample to determine dimensions
-sample = next(iter(loader))
-
 # Create model
+sample = next(iter(loader))
 model = BSMS_MeshGraphNet(
     input_node_dim=sample.x.shape[1],
     input_edge_dim=sample.edge_attr.shape[1],
@@ -71,76 +94,19 @@ model = BSMS_MeshGraphNet(
 )
 
 # Forward pass
-predictions = model(
-    sample.x,
-    sample.edge_attr,
-    sample.edge_index,
-    sample.multi_data
-)
-```
-
-### 2. Training
-
-```bash
-# Run the example training script
-python example_bsms_train.py
-```
-
-Or integrate into your existing training code:
-
-```python
-def train_epoch(model, loader, optimizer, loss_fn, device):
-    model.train()
-    total_loss = 0.0
-
-    for data in loader:
-        # Move to device
-        data = data.to(device)
-
-        # Move multi_data to device
-        multi_data = {}
-        for key, value in data.multi_data.items():
-            if isinstance(value, list):
-                multi_data[key] = [v.to(device) if torch.is_tensor(v) else v
-                                  for v in value]
-            else:
-                multi_data[key] = value
-
-        # Forward pass
-        pred = model(data.x, data.edge_attr, data.edge_index, multi_data)
-
-        # Loss and optimization
-        loss = loss_fn(pred, data.y)
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
-        total_loss += loss.item()
-
-    return total_loss / len(loader)
-```
-
-### 3. Configuration
-
-Update your config YAML:
-
-```yaml
-model:
-  name: bsms_mgn
-  hidden_dim: 128
-  num_levels: 3  # Number of coarsening levels
-  num_hidden_layers_encoder: 2
-  num_hidden_layers_decoder: 2
-  activation_fn: relu
-  dropout: 0.0
-
-training:
-  batch_size: 1  # Currently only supports 1
-  learning_rate: 1e-4
-  epochs: 100
+predictions = model(sample.x, sample.edge_attr, sample.edge_index, sample.multi_data)
 ```
 
 ## Architecture Details
+
+### Edge Coarsening Strategy
+
+BSMS uses the **A² method** from the original paper for edge coarsening:
+
+1. **Square adjacency matrix**: Compute A² to capture 2-hop neighbors
+2. **Pool edges**: Keep edges where both endpoints are selected nodes
+
+This approach maintains mesh connectivity by connecting nodes that are 1-hop or 2-hop neighbors in the original graph, preventing the connectivity loss that would occur with naive edge filtering.
 
 ### Multi-Scale Hierarchy
 
@@ -223,32 +189,17 @@ This implementation is adapted to work with your codebase:
 3. **Hidden dimensions**: Use 128-256 for good capacity
 4. **Learning rate**: Start with 1e-4, adjust as needed
 
-## Integration with Your Training Script
+## Integration Status
 
-To integrate into `train.py`:
+✅ **BSMS is fully integrated into the main training pipeline!**
 
-```python
-from models.bsms_mgn import BSMS_MeshGraphNet
-from models.bsms_dataset_wrapper import prepare_bsms_data
+The following components automatically handle BSMS:
+- **train.py**: Automatically wraps datasets and uses BSMS loaders when `model.name == 'bsms_mgn'`
+- **utils.py**: `train()` and `evaluate()` functions handle multi_data dict
+- **inference.py**: `predict_single()` handles BSMS model inference
+- **utils.py**: `load_model_and_data()` wraps test sets for BSMS inference
 
-# In your model creation section:
-if model_name == 'bsms_mgn':
-    # Wrap datasets
-    train_set = prepare_bsms_data(train_set, num_levels=3)
-    val_set = prepare_bsms_data(val_set, num_levels=3)
-    test_set = prepare_bsms_data(test_set, num_levels=3)
-
-    # Create model
-    model = BSMS_MeshGraphNet(
-        input_node_dim=input_node_dim,
-        input_edge_dim=input_edge_dim,
-        output_node_dim=output_node_dim,
-        num_levels=model_config.get('num_levels', 3),
-        latent_dim=model_config.get('hidden_dim', 128),
-        hidden_dim=model_config.get('hidden_dim', 128),
-        pos_dim=pos_dim
-    )
-```
+No manual integration needed - just configure your experiment in config.yaml!
 
 ## References
 
@@ -274,5 +225,6 @@ if model_name == 'bsms_mgn':
 
 ## Questions?
 
-Check the example script: `example_bsms_train.py`
-Original BSMS-GNN: https://github.com/Eydcao/BSMS-GNN
+- Training with BSMS: Use `python train.py --exp airfoil_bsms_mgn`
+- Original BSMS-GNN paper: https://github.com/Eydcao/BSMS-GNN
+- See main CLAUDE.md for complete integration details

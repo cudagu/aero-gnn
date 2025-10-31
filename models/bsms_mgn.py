@@ -11,8 +11,11 @@ GitHub: https://github.com/Eydcao/BSMS-GNN
 
 import torch
 import torch.nn as nn
+import numpy as np
+from scipy.sparse import csr_matrix
 from models.mlp import MLP
 from models.bistride_ops import BistridePooling, Unpool, WeightedEdgeConv, GMP
+from sparse_dot_mkl import dot_product_mkl
 
 
 class MultiScaleGraphPreprocessor:
@@ -67,24 +70,63 @@ class MultiScaleGraphPreprocessor:
             # Store selected indices
             multi_data['node_indices'].append(selected_indices)
 
-            # Create mapping from old to new indices
-            index_map = torch.full((current_num_nodes,), -1, dtype=torch.long, device=device)
-            index_map[selected_indices] = torch.arange(len(selected_indices), device=device)
-
             # Coarsen positions
             current_pos = current_pos[selected_indices]
             multi_data['positions'].append(current_pos)
 
-            # Coarsen edges
-            src, dst = current_edge_index
-            mask = (index_map[src] >= 0) & (index_map[dst] >= 0)
-            new_src = index_map[src[mask]]
-            new_dst = index_map[dst[mask]]
-            current_edge_index = torch.stack([new_src, new_dst], dim=0)
+            # Coarsen edges following original BSMS-GNN approach:
+            # 1. Compute A² (adjacency matrix squared) to get 2-hop connections
+            # 2. Keep edges where both endpoints are selected nodes
+            num_selected = len(selected_indices)
 
-            # Remove self-loops
-            mask = current_edge_index[0] != current_edge_index[1]
-            current_edge_index = current_edge_index[:, mask]
+            # Convert edge_index to scipy sparse CSR adjacency matrix
+            src, dst = current_edge_index
+            src_np = src.cpu().numpy()
+            dst_np = dst.cpu().numpy()
+            data = np.ones(len(src_np), dtype=np.float32)
+
+            adj_csr = csr_matrix(
+                (data, (src_np, dst_np)),
+                shape=(current_num_nodes, current_num_nodes)
+            )
+
+            # Add self-loops before squaring (as per original BSMS-GNN)
+            adj_csr.setdiag(1)
+
+            # Square the adjacency matrix using MKL for optimized sparse multiplication
+            adj_squared = dot_product_mkl(adj_csr, adj_csr)
+
+            # Remove self-loops after squaring
+            adj_squared.setdiag(0)
+
+            # Convert back to COO format to extract edges
+            adj_squared_coo = adj_squared.tocoo()
+            edge_sources = adj_squared_coo.row
+            edge_targets = adj_squared_coo.col
+
+            # Create mapping from old to new indices
+            selected_np = selected_indices.cpu().numpy()
+            index_map = -np.ones(current_num_nodes, dtype=np.int64)
+            index_map[selected_np] = np.arange(num_selected, dtype=np.int64)
+
+            # Keep only edges where both endpoints are selected nodes
+            valid_mask = (index_map[edge_sources] >= 0) & (index_map[edge_targets] >= 0)
+            edge_sources = edge_sources[valid_mask]
+            edge_targets = edge_targets[valid_mask]
+
+            # Remap to new indices
+            new_src = index_map[edge_sources]
+            new_dst = index_map[edge_targets]
+
+            # Convert back to torch tensors
+            new_src = torch.from_numpy(new_src).to(device)
+            new_dst = torch.from_numpy(new_dst).to(device)
+
+            # Create new edge_index
+            if len(new_src) > 0:
+                current_edge_index = torch.stack([new_src, new_dst], dim=0)
+            else:
+                current_edge_index = torch.zeros((2, 0), dtype=torch.long, device=device)
 
             multi_data['edge_indices'].append(current_edge_index)
             current_num_nodes = len(selected_indices)
@@ -282,7 +324,7 @@ class BSMS_MeshGraphNet(nn.Module):
                 node_attr: torch.Tensor,
                 edge_attr: torch.Tensor,
                 edge_index: torch.Tensor,
-                multi_data: dict = None):
+                multi_data=None):
         """
         Forward pass.
 

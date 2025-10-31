@@ -10,6 +10,8 @@ import glob
 from pathlib import Path
 from torch_geometric.utils import is_undirected, to_undirected
 from typing import List, Optional
+import torch.optim as optim
+import numpy as np
 
 
 def read_2d_mesh(file_path: str, airfoil_name: str, dtype: torch.dtype = torch.float32) -> torch_geometric.data.Data:
@@ -84,7 +86,7 @@ def read_3d_mesh(file_path: str, dtype: torch.dtype = torch.float32) -> torch_ge
     normals = torch.tensor(surface.point_normals, dtype=dtype)
     shear_stress = torch.tensor(surface["tau"], dtype=dtype)
     pressure = torch.tensor(surface["P"][:, None], dtype=dtype)
-    temperature = torch.tensor(surface["T"][:, None], dtype=dtype)
+    temperature = torch.tensor(surface["t"][:, None], dtype=dtype)
 
     data = torch_geometric.data.Data(
         edge_index=edge_index,
@@ -168,23 +170,74 @@ def get_experiment_config(params, configs):
 
     return result
 
-def train(model, loader, optimizer, loss_fn, device):
+def train(model, loader, optimizer, loss_fn, device, use_amp=False, amp_dtype=None):
+    """Train the model for one epoch.
+
+    Args:
+        model: The model to train
+        loader: DataLoader for training data
+        optimizer: Optimizer
+        loss_fn: Loss function
+        device: Device to use
+        use_amp: Whether to use automatic mixed precision
+        amp_dtype: Data type for AMP (e.g., torch.bfloat16)
+    """
     model.train()
     total_loss = 0.0
+
+    # Determine device type for autocast
+    device_type = 'cuda' if device.type == 'cuda' else 'cpu'
+
     for batch in loader:
         batch = batch.to(device)
-        
+
         # Check if model needs batch parameter (for poolMGN and MeshGraphNet_v2)
         model_class = model.__class__.__name__
-        if model_class in ['poolMGN', 'MeshGraphNet_v2']:
-            pred = model(batch.x, batch.edge_attr, batch.edge_index, batch.batch)
 
-        elif model_class in ['MLPNet']:
-            pred = model(batch.x)
+        # Use autocast if AMP is enabled
+        if use_amp and amp_dtype is not None:
+            with torch.autocast(device_type=device_type, dtype=amp_dtype):
+                if model_class == 'BSMS_MeshGraphNet':
+                    # BSMS model needs multi_data dict
+                    multi_data = {}
+                    for key, value in batch.multi_data.items():
+                        if isinstance(value, list):
+                            multi_data[key] = [v.to(device) if torch.is_tensor(v) else v for v in value]
+                        else:
+                            multi_data[key] = value.to(device) if torch.is_tensor(value) else value
+                    pred = model(batch.x, batch.edge_attr, batch.edge_index, multi_data)
+
+                elif model_class in ['poolMGN', 'MeshGraphNet_v2']:
+                    pred = model(batch.x, batch.edge_attr, batch.edge_index, batch.batch)
+
+                elif model_class in ['MLPNet']:
+                    pred = model(batch.x)
+                else:
+                    pred = model(batch.x, batch.edge_attr, batch.edge_index)
+
+                loss = loss_fn(pred, batch.y)
         else:
-            pred = model(batch.x, batch.edge_attr, batch.edge_index)
-            
-        loss = loss_fn(pred, batch.y)
+            # No AMP, regular forward pass
+            if model_class == 'BSMS_MeshGraphNet':
+                # BSMS model needs multi_data dict
+                multi_data = {}
+                for key, value in batch.multi_data.items():
+                    if isinstance(value, list):
+                        multi_data[key] = [v.to(device) if torch.is_tensor(v) else v for v in value]
+                    else:
+                        multi_data[key] = value.to(device) if torch.is_tensor(value) else value
+                pred = model(batch.x, batch.edge_attr, batch.edge_index, multi_data)
+
+            elif model_class in ['poolMGN', 'MeshGraphNet_v2']:
+                pred = model(batch.x, batch.edge_attr, batch.edge_index, batch.batch)
+
+            elif model_class in ['MLPNet']:
+                pred = model(batch.x)
+            else:
+                pred = model(batch.x, batch.edge_attr, batch.edge_index)
+
+            loss = loss_fn(pred, batch.y)
+
         loss.backward()
         optimizer.step()
         optimizer.zero_grad()
@@ -192,22 +245,71 @@ def train(model, loader, optimizer, loss_fn, device):
     return total_loss / len(loader)
 
 @torch.no_grad()
-def evaluate(model, loader, loss_fn, device):
+def evaluate(model, loader, loss_fn, device, use_amp=False, amp_dtype=None):
+    """Evaluate the model.
+
+    Args:
+        model: The model to evaluate
+        loader: DataLoader for evaluation data
+        loss_fn: Loss function
+        device: Device to use
+        use_amp: Whether to use automatic mixed precision
+        amp_dtype: Data type for AMP (e.g., torch.bfloat16)
+    """
     model.eval()
     total_loss = 0.0
+
+    # Determine device type for autocast
+    device_type = 'cuda' if device.type == 'cuda' else 'cpu'
+
     for batch in loader:
         batch = batch.to(device)
-        
+
         # Check if model needs batch parameter (for poolMGN and MeshGraphNet_v2)
         model_class = model.__class__.__name__
-        if model_class in ['poolMGN', 'MeshGraphNet_v2']:
-            pred = model(batch.x, batch.edge_attr, batch.edge_index, batch.batch)
-        elif model_class in ['MLPNet']:
-            pred = model(batch.x)
+
+        # Use autocast if AMP is enabled
+        if use_amp and amp_dtype is not None:
+            with torch.autocast(device_type=device_type, dtype=amp_dtype):
+                if model_class == 'BSMS_MeshGraphNet':
+                    # BSMS model needs multi_data dict
+                    multi_data = {}
+                    for key, value in batch.multi_data.items():
+                        if isinstance(value, list):
+                            multi_data[key] = [v.to(device) if torch.is_tensor(v) else v for v in value]
+                        else:
+                            multi_data[key] = value.to(device) if torch.is_tensor(value) else value
+                    pred = model(batch.x, batch.edge_attr, batch.edge_index, multi_data)
+
+                elif model_class in ['poolMGN', 'MeshGraphNet_v2']:
+                    pred = model(batch.x, batch.edge_attr, batch.edge_index, batch.batch)
+                elif model_class in ['MLPNet']:
+                    pred = model(batch.x)
+                else:
+                    pred = model(batch.x, batch.edge_attr, batch.edge_index)
+
+                loss = loss_fn(pred, batch.y)
         else:
-            pred = model(batch.x, batch.edge_attr, batch.edge_index)
-            
-        loss = loss_fn(pred, batch.y)
+            # No AMP, regular forward pass
+            if model_class == 'BSMS_MeshGraphNet':
+                # BSMS model needs multi_data dict
+                multi_data = {}
+                for key, value in batch.multi_data.items():
+                    if isinstance(value, list):
+                        multi_data[key] = [v.to(device) if torch.is_tensor(v) else v for v in value]
+                    else:
+                        multi_data[key] = value.to(device) if torch.is_tensor(value) else value
+                pred = model(batch.x, batch.edge_attr, batch.edge_index, multi_data)
+
+            elif model_class in ['poolMGN', 'MeshGraphNet_v2']:
+                pred = model(batch.x, batch.edge_attr, batch.edge_index, batch.batch)
+            elif model_class in ['MLPNet']:
+                pred = model(batch.x)
+            else:
+                pred = model(batch.x, batch.edge_attr, batch.edge_index)
+
+            loss = loss_fn(pred, batch.y)
+
         total_loss += loss.item()
     return total_loss / len(loader)
 
@@ -249,19 +351,30 @@ def load_model_and_data(training_output_dir: str):
     from dataset import create_datasets
     _, _, test_set, _ = create_datasets(
         data_dir=params['dataset']['data_dir'],
-        dataset_type=params['dataset']['name'], 
+        dataset_type=params['dataset']['name'],
         params=params
     )
-    
+
+    # Check if BSMS model and wrap dataset
+    model_name = params['model']['name']
+    if model_name == 'bsms_mgn':
+        from models.bsms_dataset_wrapper import prepare_bsms_data, BSMSDataLoader
+        num_levels = params['model'].get('num_levels', 3)
+        test_set = prepare_bsms_data(test_set, num_levels=num_levels)
+
     # Load model architecture and weights
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    
+
     # Get dimensions from test data
-    sample_loader = DataLoader(test_set, batch_size=1, shuffle=False)
+    if model_name == 'bsms_mgn':
+        sample_loader = BSMSDataLoader(test_set, batch_size=1, shuffle=False)
+    else:
+        sample_loader = DataLoader(test_set, batch_size=1, shuffle=False)
     sample_batch = next(iter(sample_loader))
     input_node_dim = sample_batch.x.shape[1]
     input_edge_dim = sample_batch.edge_attr.shape[1]
     output_node_dim = sample_batch.y.shape[1]
+    pos_dim = sample_batch.pos.shape[1] if hasattr(sample_batch, 'pos') else 2
     
     # Recreate model
     model_name = params['model']['name']
@@ -320,14 +433,38 @@ def load_model_and_data(training_output_dir: str):
             dropout=model_config.get('dropout')
         )
 
+    elif model_name.lower() == 'bsms_mgn':
+        from models.bsms_mgn import BSMS_MeshGraphNet
+        model = BSMS_MeshGraphNet(
+            input_node_dim=input_node_dim,
+            input_edge_dim=input_edge_dim,
+            output_node_dim=output_node_dim,
+            num_levels=model_config.get('num_levels', 3),
+            latent_dim=model_config.get('hidden_dim', 128),
+            hidden_dim=model_config.get('hidden_dim', 128),
+            pos_dim=pos_dim,
+            num_hidden_layers_encoder=model_config.get('num_hidden_layers_encoder', 2),
+            num_hidden_layers_decoder=model_config.get('num_hidden_layers_decoder', 2),
+            activation_fn=model_config.get('activation_fn', 'relu'),
+            dropout=model_config.get('dropout', 0.0)
+        )
+
     else:
         raise ValueError(f"Unknown model type: {model_name}")
     
     # Load weights
     weights_path = os.path.join(training_output_dir, "model_weights.pt")
     model.load_state_dict(torch.load(weights_path, map_location='cpu'))
-    
-    return model, norm_stats, test_set, params, device
+
+    # Determine AMP settings based on training precision
+    precision = params.get('training', {}).get('precision', 'float32').lower()
+    use_amp = False
+    amp_dtype = None
+    if precision in ['bf16', 'bfloat16']:
+        use_amp = True
+        amp_dtype = torch.bfloat16
+
+    return model, norm_stats, test_set, params, device, use_amp, amp_dtype
 
 
 def find_latest_training_run(base_dir="training_runs"):
@@ -445,12 +582,12 @@ def calculate_aero_coefficients_2d(
     import numpy as np
     
     # Ensure tensors are on CPU and convert to numpy for easier manipulation
-    pos = test_data.pos.cpu().numpy() if torch.is_tensor(test_data.pos) else test_data.pos
-    pressure = pressure.cpu().numpy() if torch.is_tensor(pressure) else pressure
-    shear_stress = shear_stress.cpu().numpy() if torch.is_tensor(shear_stress) else shear_stress
-    normals = test_data.normals.cpu().numpy() if torch.is_tensor(test_data.normals) else test_data.normals
-    edge_index = test_data.edge_index.cpu().numpy() if torch.is_tensor(test_data.edge_index) else test_data.edge_index
-    
+    pos = test_data.pos.cpu().numpy() if test_data.pos.dtype != torch.bfloat16 else test_data.pos.float().cpu().numpy()
+    pressure = pressure.cpu().numpy() if pressure.dtype != torch.bfloat16 else pressure.float().cpu().numpy()
+    shear_stress = shear_stress.cpu().numpy() if shear_stress.dtype != torch.bfloat16 else shear_stress.float().cpu().numpy()
+    normals = test_data.normals.cpu().numpy() if test_data.normals.dtype != torch.bfloat16 else test_data.normals.float().cpu().numpy()
+    edge_index = test_data.edge_index.cpu().numpy() if test_data.edge_index.dtype != torch.bfloat16 else test_data.edge_index.float().cpu().numpy()
+
     # Flatten pressure if needed
     if pressure.ndim > 1:
         pressure = pressure.flatten()
@@ -489,11 +626,11 @@ def calculate_aero_coefficients_2d(
     
     # Calculate pressure forces: F_p = p * n * dA
     # Force per node
-    pressure_force = pressure[:, np.newaxis] * normals * node_areas[:, np.newaxis]
+    pressure_force = -pressure[:, np.newaxis] * normals * node_areas[:, np.newaxis]
     
     # Calculate shear forces: F_tau = -tau * dA
     # Shear stress already points in tangential direction
-    shear_force = -shear_stress * node_areas[:, np.newaxis]
+    shear_force = shear_stress * node_areas[:, np.newaxis]
     
     # Total force per node
     total_force = pressure_force + shear_force
@@ -558,7 +695,7 @@ def plot_adjacency_matrix(
 
     fig, ax = plt.subplots(figsize=figsize)
 
-    max_display_nodes = 100000
+    max_display_nodes = 300000
     if num_nodes > max_display_nodes:
         sample_indices = np.random.choice(num_nodes, max_display_nodes, replace=False)
         sample_indices = np.sort(sample_indices)
@@ -788,3 +925,21 @@ def plot_graph_sparsity(
     plot_graph_statistics(data, title=f"{title} - Statistics", save_path=stats_path)
 
     print(f"\nAll figures saved with prefix: {base_name}")
+    
+class WarmupCosineDecayScheduler(optim.lr_scheduler._LRScheduler):
+    def __init__(self, optimizer, warmup, max_iters):
+        self.warmup = warmup
+        self.max_num_iters = max_iters
+        super().__init__(optimizer)
+
+    def get_lr(self):
+        lr_factor = self.get_lr_factor(epoch=self.last_epoch)
+        return [base_lr * lr_factor for base_lr in self.base_lrs]
+
+    def get_lr_factor(self, epoch):
+        if epoch <= self.warmup:
+            lr_factor = epoch * 1.0 / self.warmup
+        else:
+            progress = (epoch - self.warmup) / (self.max_num_iters - self.warmup)
+            lr_factor = 0.5 * (1 + np.cos(np.pi * progress))
+        return lr_factor

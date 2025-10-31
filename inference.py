@@ -28,14 +28,16 @@ plt.rcParams.update({
 
 class AeroInference:
     """Comprehensive inference class for aerodynamic predictions."""
-    
-    def __init__(self, model, norm_stats: Dict, device: torch.device, params: Dict):
+
+    def __init__(self, model, norm_stats: Dict, device: torch.device, params: Dict, use_amp: bool = False, amp_dtype: Optional[torch.dtype] = None):
         self.model = model.to(device)
         self.norm_stats = norm_stats
         self.device = device
         self.params = params
+        self.use_amp = use_amp
+        self.amp_dtype = amp_dtype
         self.model.eval()
-        
+
         # Move normalization stats to device
         self.device_norm_stats = {}
         for key, value in norm_stats.items():
@@ -48,32 +50,71 @@ class AeroInference:
     def predict_single(self, data) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Predict for a single data sample."""
         data = data.to(self.device)
-        
+
         # Check if model needs batch parameter (for poolMGN, MeshGraphNet_v2)
         model_class = self.model.__class__.__name__
-        if model_class in ['poolMGN', 'MeshGraphNet_v2']:
-            # For single graph inference, create a batch tensor of zeros
-            batch = torch.zeros(data.x.size(0), dtype=torch.long, device=self.device)
-            pred_scaled = self.model(data.x, data.edge_attr, data.edge_index, batch)
-            
-        elif model_class in ['MLPNet']:
-            pred_scaled = self.model(data.x)
-    
+
+        # Determine device type for autocast
+        device_type = 'cuda' if self.device.type == 'cuda' else 'cpu'
+
+        # Use autocast if AMP is enabled
+        if self.use_amp and self.amp_dtype is not None:
+            with torch.autocast(device_type=device_type, dtype=self.amp_dtype):
+                if model_class == 'BSMS_MeshGraphNet':
+                    # BSMS model needs multi_data dict
+                    multi_data = {}
+                    for key, value in data.multi_data.items():
+                        if isinstance(value, list):
+                            multi_data[key] = [v.to(self.device) if torch.is_tensor(v) else v for v in value]
+                        else:
+                            multi_data[key] = value.to(self.device) if torch.is_tensor(value) else value
+                    pred_scaled = self.model(data.x, data.edge_attr, data.edge_index, multi_data)
+
+                elif model_class in ['poolMGN', 'MeshGraphNet_v2']:
+                    # For single graph inference, create a batch tensor of zeros
+                    batch = torch.zeros(data.x.size(0), dtype=torch.long, device=self.device)
+                    pred_scaled = self.model(data.x, data.edge_attr, data.edge_index, batch)
+
+                elif model_class in ['MLPNet']:
+                    pred_scaled = self.model(data.x)
+
+                else:
+                    pred_scaled = self.model(data.x, data.edge_attr, data.edge_index)
         else:
-            pred_scaled = self.model(data.x, data.edge_attr, data.edge_index)
-        
+            # No AMP, regular forward pass
+            if model_class == 'BSMS_MeshGraphNet':
+                # BSMS model needs multi_data dict
+                multi_data = {}
+                for key, value in data.multi_data.items():
+                    if isinstance(value, list):
+                        multi_data[key] = [v.to(self.device) if torch.is_tensor(v) else v for v in value]
+                    else:
+                        multi_data[key] = value.to(self.device) if torch.is_tensor(value) else value
+                pred_scaled = self.model(data.x, data.edge_attr, data.edge_index, multi_data)
+
+            elif model_class in ['poolMGN', 'MeshGraphNet_v2']:
+                # For single graph inference, create a batch tensor of zeros
+                batch = torch.zeros(data.x.size(0), dtype=torch.long, device=self.device)
+                pred_scaled = self.model(data.x, data.edge_attr, data.edge_index, batch)
+
+            elif model_class in ['MLPNet']:
+                pred_scaled = self.model(data.x)
+
+            else:
+                pred_scaled = self.model(data.x, data.edge_attr, data.edge_index)
+
         # Denormalize predictions
-        pred_unscaled = (pred_scaled * self.device_norm_stats['target_std'] + 
+        pred_unscaled = (pred_scaled * self.device_norm_stats['target_std'] +
                         self.device_norm_stats['target_mean']).cpu()
-        
+
         # Denormalize ground truth
-        target_unscaled = (data.y * self.device_norm_stats['target_std'] + 
+        target_unscaled = (data.y * self.device_norm_stats['target_std'] +
                           self.device_norm_stats['target_mean']).cpu()
-        
+
         # Keep scaled versions for training-comparable errors
         pred_scaled = pred_scaled.cpu()
         target_scaled = data.y.cpu()
-        
+
         return pred_unscaled, target_unscaled, pred_scaled, target_scaled
     
     def compute_errors(self, pred: torch.Tensor, target: torch.Tensor) -> Dict[str, float]:
@@ -102,21 +143,25 @@ class AeroInference:
     def compute_rrmse_percent(self, pred: torch.Tensor, target: torch.Tensor) -> float:
         """Compute relative RMSE as percentage (mean across all features)."""
         # Compute RMSE for each feature
-        feature_rmse = torch.sqrt(torch.mean((pred - target) ** 2, dim=0))
-        feature_mean_abs = torch.mean(torch.abs(target), dim=0)
+        # feature_rmse = torch.sqrt(torch.mean((pred - target) ** 2, dim=0))
+        # feature_mean_abs = torch.mean(torch.abs(target), dim=0)
         
-        # Relative RMSE per feature (avoid division by zero)
-        feature_rrmse = torch.where(feature_mean_abs > 1e-8, 
-                                   feature_rmse / feature_mean_abs, 
-                                   torch.zeros_like(feature_rmse))
+        # # Relative RMSE per feature (avoid division by zero)
+        # feature_rrmse = torch.where(feature_mean_abs > 1e-8, 
+        #                            feature_rmse / feature_mean_abs, 
+        #                            torch.zeros_like(feature_rmse))
         
-        # Mean relative RMSE across all features as percentage
-        mean_rrmse_percent = torch.mean(feature_rrmse).item() * 100
-        return mean_rrmse_percent
+        # # Mean relative RMSE across all features as percentage
+        # mean_rrmse_percent = torch.mean(feature_rrmse).item() * 100
+        # return mean_rrmse_percent
+        return (
+            torch.linalg.vector_norm(pred - target) / torch.linalg.vector_norm(target)
+        ).mean().item() * 100
     
-    def plot_2d_airfoil_predictions(self, data, pred: torch.Tensor, target: torch.Tensor, 
+    def plot_2d_airfoil_predictions(self, data, pred: torch.Tensor, target: torch.Tensor,
                                 save_path: str, case_name: str = ""):
         """Create separate plots for predictions."""
+        # With AMP, data stays in float32/float64, so no need for dtype checks
         pos = data.pos.cpu().numpy()
         x_coords = pos[:, 0]
         y_coords = pos[:, 1]
@@ -134,9 +179,10 @@ class AeroInference:
         # 1. PREDICTIONS PLOT
         fig_pred = plt.figure(figsize=(12, 4 * n_features))
         for i, feature_name in enumerate(target_features):
+            # With AMP, data stays in float32/float64, so no need for dtype checks
             pred_feature = pred[:, i].numpy()
             target_feature = target[:, i].numpy()
-            
+
             ax = plt.subplot(n_features, 1, i + 1)
             scatter1 = plt.scatter(x_coords, target_feature, c='b', 
                                 alpha=0.7, s=20, label='Ground Truth', marker='o')
@@ -493,20 +539,23 @@ def main():
             raise FileNotFoundError(f"Required file not found: {os.path.join(args.training_dir, file)}")
     
     print(f"Loading model and data from: {args.training_dir}")
-    
+
     # Load everything
-    model, norm_stats, test_set, params, device = load_model_and_data(args.training_dir)
-    
+    model, norm_stats, test_set, params, device, use_amp, amp_dtype = load_model_and_data(args.training_dir)
+
     if args.device != "auto":
         device = torch.device(args.device)
-    
+
     print(f"Using device: {device}")
     print(f"Loaded model with {sum(p.numel() for p in model.parameters()):,} parameters")
     print(f"Test set contains {len(test_set)} samples")
-    
-    # Create inference engine
-    inference_engine = AeroInference(model, norm_stats, device, params)
-    
+
+    if use_amp:
+        print(f"Using automatic mixed precision with {amp_dtype}")
+
+    # Create inference engine with AMP settings
+    inference_engine = AeroInference(model, norm_stats, device, params, use_amp=use_amp, amp_dtype=amp_dtype)
+
     # Run inference
     inference_engine.run_inference(test_set, args.training_dir, args.data_dir)
 

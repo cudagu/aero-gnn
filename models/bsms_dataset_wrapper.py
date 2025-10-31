@@ -68,7 +68,7 @@ class BSMSDatasetWrapper(Dataset):
         )
 
         # Copy additional attributes
-        for key in data.keys:
+        for key in data.keys():
             if key not in ['x', 'edge_index', 'edge_attr', 'pos', 'y']:
                 setattr(processed_data, key, getattr(data, key))
 
@@ -140,45 +140,3 @@ def prepare_bsms_data(base_dataset, num_levels=3):
         bsms_dataset: Wrapped dataset with multi-scale preprocessing
     """
     return BSMSDatasetWrapper(base_dataset, num_levels=num_levels, cache=True)
-
-
-# Example usage:
-if __name__ == "__main__":
-    """
-    Example of how to use BSMS dataset wrapper with your existing setup.
-    """
-    import sys
-    sys.path.append('..')
-
-    from dataset import AeroDataset
-    import yaml
-
-    # Load your configuration
-    with open('../configs/config.yaml', 'r') as f:
-        config = yaml.safe_load(f)
-
-    # Create base dataset
-    base_dataset = AeroDataset(
-        data_dir=config['dataset']['data_dir'],
-        dataset_type='airfoil_2d',
-        params=config
-    )
-
-    # Wrap with BSMS preprocessing
-    bsms_dataset = prepare_bsms_data(base_dataset, num_levels=3)
-
-    # Test getting one sample
-    sample = bsms_dataset[0]
-
-    print("\nSample data structure:")
-    print(f"  Node features: {sample.x.shape}")
-    print(f"  Edge index: {sample.edge_index.shape}")
-    print(f"  Edge features: {sample.edge_attr.shape}")
-    print(f"  Positions: {sample.pos.shape}")
-    print(f"  Targets: {sample.y.shape}")
-
-    print("\nMulti-scale structure:")
-    multi_data = sample.multi_data
-    print(f"  Number of levels: {len(multi_data['num_nodes'])}")
-    for i, n in enumerate(multi_data['num_nodes']):
-        print(f"    Level {i}: {n} nodes, {multi_data['edge_indices'][i].shape[1]} edges")
