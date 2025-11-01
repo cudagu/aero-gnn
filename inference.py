@@ -6,7 +6,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import pyvista as pv
 from torch_geometric.loader import DataLoader
-from utils import calculate_aero_coefficients_2d, calculate_aero_coefficients_3d, load_model_and_data, find_latest_training_run
+from utils import calculate_aero_coefficients_2d, calculate_aero_coefficients_3d, find_latest_training_run
+from train_utils import create_model
 import argparse
 from typing import Dict, List, Tuple, Optional, Union
 from tqdm import tqdm
@@ -25,6 +26,71 @@ plt.rcParams.update({
     'savefig.dpi': 300,
     'savefig.bbox': 'tight'
 })
+
+def load_model_and_data(training_output_dir: str):
+    """Load trained model and test data from training output directory."""
+    
+    # Load parameters
+    params_path = os.path.join(training_output_dir, "experiment_params.json")
+    with open(params_path, 'r') as f:
+        params = json.load(f)
+    
+    # Load normalization stats
+    norm_stats_path = os.path.join(training_output_dir, "normalization_stats.pt")
+    norm_stats = torch.load(norm_stats_path, map_location='cpu')
+    
+    # Recreate test dataset
+    from dataset import create_datasets
+    _, _, test_set, _ = create_datasets(
+        data_dir=params['dataset']['data_dir'],
+        dataset_type=params['dataset']['name'],
+        params=params
+    )
+
+    # Check if BSMS model and wrap dataset
+    model_name = params['model']['name']
+    if model_name == 'bsms_mgn':
+        from models.bsms_dataset_wrapper import prepare_bsms_data, BSMSDataLoader
+        num_levels = params['model'].get('num_levels', 3)
+        test_set = prepare_bsms_data(test_set, num_levels=num_levels)
+
+    # Load model architecture and weights
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    # Get dimensions from test data
+    if model_name == 'bsms_mgn':
+        sample_loader = BSMSDataLoader(test_set, batch_size=1, shuffle=False)
+    else:
+        sample_loader = DataLoader(test_set, batch_size=1, shuffle=False)
+    sample_batch = next(iter(sample_loader))
+    input_node_dim = sample_batch.x.shape[1]
+    input_edge_dim = sample_batch.edge_attr.shape[1]
+    output_node_dim = sample_batch.y.shape[1]
+    pos_dim = sample_batch.pos.shape[1] if hasattr(sample_batch, 'pos') else 2
+    
+    # Recreate model using factory function
+    model_config = params['model']
+    model = create_model(
+        model_config=model_config,
+        input_node_dim=input_node_dim,
+        input_edge_dim=input_edge_dim,
+        output_node_dim=output_node_dim,
+        pos_dim=pos_dim
+    )
+    
+    # Load weights
+    weights_path = os.path.join(training_output_dir, "model_weights.pt")
+    model.load_state_dict(torch.load(weights_path, map_location='cpu'))
+
+    # Determine AMP settings based on training precision
+    precision = params.get('training', {}).get('precision', 'float32').lower()
+    use_amp = False
+    amp_dtype = None
+    if precision in ['bf16', 'bfloat16']:
+        use_amp = True
+        amp_dtype = torch.bfloat16
+
+    return model, norm_stats, test_set, params, device, use_amp, amp_dtype
 
 class AeroInference:
     """Comprehensive inference class for aerodynamic predictions."""

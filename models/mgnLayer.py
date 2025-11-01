@@ -140,13 +140,14 @@ class NodeBlock(nn.Module):
         """
         row, col = edge_index 
         # Aggregate edge features for each node (using sum aggregation)
+    
         if self.aggregation == 'mean':
             edge_aggr = scatter_mean(edge_attr, col, dim=0, dim_size=node_attr.size(0))
         elif self.aggregation == 'add':  
             edge_aggr = scatter_add(edge_attr, col, dim=0, dim_size=node_attr.size(0))
         else:
             raise ValueError(f"Unsupported aggregation method: {self.aggregation}")
-        
+            
         # # Concatenate node features with aggregated edge features
         node_input = torch.cat([node_attr, edge_aggr], dim=-1)
         
@@ -172,7 +173,9 @@ class MeshGraphNetLayer(nn.Module):
             self.edge_block = EdgeBlockSum(node_dim, edge_dim, hidden_dim, num_hidden_layers_edge_processor, activation_fn, use_layer_norm)
         else:
             self.edge_block = EdgeBlock(node_dim, edge_dim, hidden_dim, num_hidden_layers_edge_processor, activation_fn, use_layer_norm)
+        
         self.node_block = NodeBlock(node_dim, edge_dim, hidden_dim, num_hidden_layers_node_processor, activation_fn, use_layer_norm, aggregation)
+            
 
     def forward(self, node_attr, edge_attr, edge_index):
         """

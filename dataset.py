@@ -1,12 +1,15 @@
 import torch
+import torch_geometric
 import glob
 import os
 from pathlib import Path
 from typing import Optional, List
 import random
 from collections import defaultdict
+import pyvista as pv
+from torch_geometric.utils import is_undirected, to_undirected
 from torch_geometric.data import Dataset
-from utils import read_2d_mesh, read_3d_mesh, read_AhmedBody
+
 from tqdm import tqdm
 
 
@@ -29,7 +32,7 @@ class AeroDataset(Dataset):
         
         if dataset_type == 'airfoil_2d':
             self._load_airfoil_2d()
-        elif dataset_type == 'missile_3d':
+        elif dataset_type == 'missile_3d1':
             self._load_missile_3d()
         elif dataset_type == 'ahmed_body':
             self._load_ahmed_body()
@@ -162,7 +165,7 @@ class AeroDataset(Dataset):
             self.data_list.append(data)
     
     def _load_missile_3d(self):
-        files = glob.glob(os.path.join(self.data_dir, "**/*.vtu"), recursive=True)
+        files = glob.glob(os.path.join(self.data_dir, "**/*.vtp"), recursive=True)
         print(f"Found {len(files)} missile 3D files")
         
         # Get parameter ranges
@@ -174,31 +177,13 @@ class AeroDataset(Dataset):
         for file in files:
             try:
                 path_parts = Path(file).parts
-                filename = Path(file).stem
+                filename = path_parts[-2]
                 
-                # Extract mach, alpha, beta from filename
-                if '_' in filename:
-                    parts = filename.split('_')
-                    # Look for numeric parts that could be mach, alpha, beta
-                    numeric_parts = []
-                    for part in parts:
-                        try:
-                            numeric_parts.append(float(part))
-                        except ValueError:
-                            continue
-                    
-                    # If we have at least mach and alpha
-                    if len(numeric_parts) >= 2:
-                        mach = numeric_parts[0]
-                        alpha = numeric_parts[1] 
-                        beta = numeric_parts[2] if len(numeric_parts) > 2 else 0.0
-                    else:
-                        # Skip if can't extract parameters
-                        continue
-                else:
-                    # Skip if can't parse filename
-                    continue
-                
+                # Extract mach, alpha, beta from filename with structure "m0.85_b0_a0"
+                mach = float([s for s in filename.split('_') if s.startswith('m')][0][1:])
+                beta = float([s for s in filename.split('_') if s.startswith('b')][0][1:])
+                alpha = float([s for s in filename.split('_') if s.startswith('a')][0][1:])
+
                 # Filter based on ranges
                 if mach_range is not None:
                     if len(mach_range) == 1:  # Single value
@@ -238,7 +223,26 @@ class AeroDataset(Dataset):
             print(f"  Alpha range: {alpha_range}")
         if beta_range:
             print(f"  Beta range: {beta_range}")
+            
+        train_num_samples = self.params["training"].get("train_num_samples")
+        val_num_samples = self.params["training"].get("val_num_samples")
+        test_num_samples = self.params["training"].get("test_num_samples")
         
+        train_num_samples = None if train_num_samples == "None" else train_num_samples
+        val_num_samples = None if val_num_samples == "None" else val_num_samples
+        test_num_samples = None if test_num_samples == "None" else test_num_samples
+        
+
+        if train_num_samples is not None or val_num_samples is not None or test_num_samples is not None:
+            sampled_files = []
+            split_counter = 0
+            split_limit = int(train_num_samples) + int(val_num_samples) + int(test_num_samples)
+
+            for file_path in filtered_files:
+                if split_counter < split_limit:
+                    sampled_files.append(file_path)
+                    split_counter += 1
+            filtered_files = sampled_files
         pbar = tqdm(filtered_files, desc="Loading Missile 3D files")
         for file in pbar:
             filename = Path(file).name
@@ -519,6 +523,122 @@ class AeroDataset(Dataset):
         
         return train_data, val_data, test_data
 
+def read_2d_mesh(file_path: str, airfoil_name: str, dtype: torch.dtype = torch.float32) -> torch_geometric.data.Data:
+    """Read an airfoil case and return a 2D surface graph.
+
+    Assumes the file contains fields: 'tau' (shear stress), 'P' (pressure), 'T' (temperature).
+    
+    Args:
+        file_path: Path to the VTU file
+        airfoil_name: Name of the airfoil
+        dtype: Data type for tensors (torch.float32 or torch.float64)
+    """
+    mesh = pv.read(file_path)
+    surface = mesh.extract_surface()
+    surface = surface.compute_normals(
+        cell_normals=False, point_normals=True, inplace=True, flip_normals=True
+    )
+    # Slice close to the z=0 plane, useful if the dataset is an extruded 3D surface.
+    slc = surface.slice(normal=(0.0, 0.0, 1.0))
+    slc = slc.cell_data_to_point_data()
+
+    edges = slc.extract_all_edges(use_all_points=True, clear_data=True)
+    edge_index = torch.tensor(
+        edges.lines.reshape(-1, 3)[:, 1:].T, dtype=torch.long
+    )
+    pos_np = slc.points[:, :2]
+    if not is_undirected(edge_index):
+        edge_index = to_undirected(edge_index, num_nodes=pos_np.shape[0])
+
+    pos = torch.tensor(pos_np, dtype=dtype)
+    normals = torch.tensor(slc.point_normals[:, :2], dtype=dtype)
+
+    shear_stress = torch.tensor(slc["tau"][:, :2], dtype=dtype)
+    pressure = torch.tensor(slc["P"][:, None], dtype=dtype)
+    temperature = torch.tensor(slc["t"][:, None], dtype=dtype)
+
+    data = torch_geometric.data.Data(
+        edge_index=edge_index,
+        pos=pos,
+        normals=normals,
+        airfoil = airfoil_name,
+        y=torch.cat([pressure, shear_stress, temperature], dim=-1),
+        
+    )
+    return data
+
+def read_3d_mesh(file_path: str, dtype: torch.dtype = torch.float32) -> torch_geometric.data.Data:
+    """Read a 3D surface graph (e.g., missile) from a VTP/VTU/STL with fields.
+
+    Returns Data with pos (N,3), normals (N,3), edge_index, and y = [P, tau_x, tau_y, tau_z, T].
+    
+    Args:
+        file_path: Path to the mesh file
+        dtype: Data type for tensors (torch.float32 or torch.float64)
+    """
+    mesh = pv.read(file_path)
+    surface = mesh.extract_surface()
+    surface = surface.compute_normals(
+        cell_normals=False, point_normals=True, inplace=True, flip_normals=True
+    )
+    surface = surface.cell_data_to_point_data()
+
+    edges = surface.extract_all_edges(use_all_points=True, clear_data=True)
+    edge_index = torch.tensor(
+        edges.lines.reshape(-1, 3)[:, 1:].T, dtype=torch.long
+    )
+    pos_np = surface.points
+    if not is_undirected(edge_index):
+        edge_index = to_undirected(edge_index, num_nodes=pos_np.shape[0])
+
+    pos = torch.tensor(pos_np, dtype=dtype)
+    normals = torch.tensor(surface.point_normals, dtype=dtype)
+    shear_stress = torch.tensor(surface["tau"], dtype=dtype)
+    pressure = torch.tensor(surface["P"][:, None], dtype=dtype)
+    temperature = torch.tensor(surface["t"][:, None], dtype=dtype)
+
+    data = torch_geometric.data.Data(
+        edge_index=edge_index,
+        pos=pos,
+        normals=normals,
+        y=torch.cat([pressure, shear_stress, temperature], dim=-1),
+    )
+    return data
+
+def read_AhmedBody(file_path: str, dtype: torch.dtype = torch.float32) -> torch_geometric.data.Data:
+    """Read an AhmedBody case with 'wallShearStress', 'P'.
+    
+    Args:
+        file_path: Path to the mesh file
+        dtype: Data type for tensors (torch.float32 or torch.float64)
+    """
+    mesh = pv.read(file_path)
+    surface = mesh.extract_surface()
+    surface = surface.compute_normals(
+        cell_normals=False, point_normals=True, inplace=True, flip_normals=True
+    )
+    surface = surface.cell_data_to_point_data()
+
+    edges = surface.extract_all_edges(use_all_points=True, clear_data=True)
+    edge_index = torch.tensor(
+        edges.lines.reshape(-1, 3)[:, 1:].T, dtype=torch.long
+    )
+    pos_np = surface.points
+    if not is_undirected(edge_index):
+        edge_index = to_undirected(edge_index, num_nodes=pos_np.shape[0])
+
+    pos = torch.tensor(pos_np, dtype=dtype)
+    normals = torch.tensor(surface.point_normals, dtype=dtype)
+    shear_stress = torch.tensor(surface["wallShearStress"], dtype=dtype)
+    pressure = torch.tensor(surface["p"][:, None], dtype=dtype)
+
+    data = torch_geometric.data.Data(
+        edge_index=edge_index,
+        pos=pos,
+        normals=normals,
+        y=torch.cat([pressure, shear_stress], dim=-1),
+    )
+    return data
 
 def create_datasets(data_dir: str, dataset_type: str, params: dict, dtype: torch.dtype = torch.float32):
     """Create train, val, test datasets with normalization.
@@ -543,6 +663,10 @@ def create_datasets(data_dir: str, dataset_type: str, params: dict, dtype: torch
     elif dataset_type == 'ahmed_body':
         # Ahmed body data is already pre-split into train/validation/test directories
         train_data, val_data, test_data = full_dataset.split_presplit()
+    elif dataset_type == 'missile_3d1':
+        train_data, val_data, test_data = full_dataset.split_generic(
+            train_ratio, val_ratio, test_ratio, random_seed
+        )
     else:
         train_data, val_data, test_data = full_dataset.split_generic(
             train_ratio, val_ratio, test_ratio, random_seed

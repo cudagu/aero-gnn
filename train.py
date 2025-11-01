@@ -5,9 +5,11 @@ import torch
 from torch_geometric.loader import DataLoader
 from torch import nn
 import argparse
-from utils import get_experiment_config, train, evaluate
+from utils import get_experiment_config
+from train_utils import train, evaluate, create_optimizer, create_scheduler
 from torch_geometric.data import Dataset
 from dataset import create_datasets
+from train_utils import create_model
 import glob
 from pathlib import Path
 from tqdm import tqdm
@@ -38,8 +40,6 @@ def main(params):
         use_amp = True
         amp_dtype = torch.bfloat16
         print("Using automatic mixed precision with bfloat16")
-        print("  - Data: float32 (preserves precision)")
-        print("  - Operations: bfloat16 (faster computation)")
 
     else:
         raise ValueError(f"Unknown precision type: {precision}. Supported types: 'float32', 'float64', 'bfloat16', 'single'")
@@ -81,127 +81,16 @@ def main(params):
     output_node_dim = sample_batch.y.shape[1]
     pos_dim = sample_batch.pos.shape[1] if hasattr(sample_batch, 'pos') else 2
 
-    # print(f"Input node features: {input_node_dim}")
-    # print(f"Input edge features: {input_edge_dim}")
-    # print(f"Output dimension: {output_node_dim}")
-
     # Model instantiation based on configuration (model_name already defined above)
-    model_config = params['model']
+    model_config = params['model']    
     
-    if model_name == 'MLP' or model_name == 'mlpnet':
-        from models.mlpnet import MLPNet
-        model = MLPNet(
-            input_node_dim=input_node_dim,
-            output_node_dim=output_node_dim,
-            hidden_dim=model_config.get('hidden_dim'),
-            num_hidden_layers_encoder=model_config.get('num_hidden_layers_encoder'),
-            num_hidden_layers_decoder=model_config.get('num_hidden_layers_decoder'),
-            activation_fn=model_config.get('activation'),
-            dropout=model_config.get('dropout')
-        )
-      
-    elif model_name == "meshgraphnet":
-        from models.mgn import MeshGraphNet
-        model = MeshGraphNet(
-            input_node_dim=input_node_dim,
-            input_edge_dim=input_edge_dim,
-            output_node_dim=output_node_dim,
-            processor_size=model_config.get('processor_size'),
-            activation_fn=model_config.get('activation_fn'),
-            num_hidden_layers_node_processor=model_config.get('num_hidden_layers_node_processor'),
-            num_hidden_layers_edge_processor=model_config.get('num_hidden_layers_edge_processor'),
-            hidden_dim_processor=model_config.get('hidden_dim'),
-            num_hidden_layers_node_encoder=model_config.get('num_hidden_layers_node_encoder'),
-            hidden_dim_node_encoder=model_config.get('hidden_dim'),
-            num_hidden_layers_edge_encoder=model_config.get('num_hidden_layers_edge_encoder'),
-            hidden_dim_edge_encoder=model_config.get('hidden_dim'),
-            aggregation=model_config.get('aggregation'),
-            hidden_dim_decoder=model_config.get('hidden_dim'),
-            num_hidden_layers_decoder=model_config.get('num_hidden_layers_decoder'),
-            do_concat_trick=model_config.get('do_concat_trick'),
-        )
-        
-    elif model_name == 'poolMGN':
-        from models.poolmgn import poolMGN
-        model = poolMGN(
-            input_node_dim=input_node_dim,
-            input_edge_dim=input_edge_dim,
-            output_node_dim=output_node_dim,
-            processor_size=model_config.get('processor_size'),
-            activation_fn=model_config.get('activation_fn'),
-            num_hidden_layers_node_processor=model_config.get('num_hidden_layers_node_processor'),
-            num_hidden_layers_edge_processor=model_config.get('num_hidden_layers_edge_processor'),
-            hidden_dim_processor=model_config.get('hidden_dim'),
-            num_hidden_layers_node_encoder=model_config.get('num_hidden_layers_node_encoder'),
-            hidden_dim_node_encoder=model_config.get('hidden_dim'),
-            num_hidden_layers_edge_encoder=model_config.get('num_hidden_layers_edge_encoder'),
-            hidden_dim_edge_encoder=model_config.get('hidden_dim'),
-            aggregation=model_config.get('aggregation'),
-            hidden_dim_decoder=model_config.get('hidden_dim'),
-            num_hidden_layers_decoder=model_config.get('num_hidden_layers_decoder'),
-            global_pool_method=model_config.get('global_pool_method'),
-            num_hidden_layers_global_encoder=model_config.get('num_hidden_layers_global_encoder'),
-            global_dim=model_config.get('global_dim'),
-            dropout=model_config.get('dropout')
-        )
-        
-    elif model_name == "fouriermgn":
-        from models.fouriermgn import FourierMeshGraphNet
-        model = FourierMeshGraphNet(
-            input_node_dim=input_node_dim,
-            input_edge_dim=input_edge_dim,
-            output_node_dim=output_node_dim,
-            processor_size=model_config.get('processor_size'),
-            activation_fn=model_config.get('activation_fn'),
-            num_hidden_layers_node_processor=model_config.get('num_hidden_layers_node_processor'),
-            num_hidden_layers_edge_processor=model_config.get('num_hidden_layers_edge_processor'),
-            hidden_dim_processor=model_config.get('hidden_dim'),
-            num_hidden_layers_node_encoder=model_config.get('num_hidden_layers_node_encoder'),
-            hidden_dim_node_encoder=model_config.get('hidden_dim'),
-            num_hidden_layers_edge_encoder=model_config.get('num_hidden_layers_edge_encoder'),
-            hidden_dim_edge_encoder=model_config.get('hidden_dim'),
-            aggregation=model_config.get('aggregation'),
-            hidden_dim_decoder=model_config.get('hidden_dim'),
-            num_hidden_layers_decoder=model_config.get('num_hidden_layers_decoder'),
-            dropout=model_config.get('dropout'),
-            fourier_features_dim=model_config.get('fourier_features_dim'),
-            fourier_freq_start=model_config.get('fourier_freq_start'),
-            fourier_freq_length=model_config.get('fourier_freq_length')
-        )
-        
-    elif model_name == 'trial1' or model_name == 'Trial1':
-        from models.trial1 import MeshGraphNet_v2
-        model = MeshGraphNet_v2(
-                node_input_size=input_node_dim,
-                edge_input_size=input_edge_dim,
-                hidden_channels=model_config.get('hidden_dim'),
-                out_channels=output_node_dim,
-                num_graph_conv_layers=model_config.get('num_message_passing_layers'),
-                num_encoder_layers=model_config.get('number_of_encoding_layers'),
-                num_decoder_layers=model_config.get('number_of_decoding_layers'),
-                dropout=model_config.get('dropout')
-                )
-
-    elif model_name == 'bsms_mgn':
-        from models.bsms_mgn import BSMS_MeshGraphNet
-        model = BSMS_MeshGraphNet(
-            input_node_dim=input_node_dim,
-            input_edge_dim=input_edge_dim,
-            output_node_dim=output_node_dim,
-            num_levels=model_config.get('num_levels', 3),
-            latent_dim=model_config.get('hidden_dim', 128),
-            hidden_dim=model_config.get('hidden_dim', 128),
-            pos_dim=pos_dim,
-            num_hidden_layers_encoder=model_config.get('num_hidden_layers_encoder', 2),
-            num_hidden_layers_decoder=model_config.get('num_hidden_layers_decoder', 2),
-            activation_fn=model_config.get('activation_fn', 'relu'),
-            dropout=model_config.get('dropout', 0.0)
-        )
-
-    else:
-        raise ValueError(f"Unknown model type: {model_name}. Available models: 'MLP', 'meshgraphnet', 'poolMGN', 'fouriermgn', 'trial1', 'bsms_mgn'")
-        
-    print(model)
+    # Use model factory to create the model
+    model = create_model(model_config=model_config, 
+                         input_node_dim=input_node_dim,
+                         input_edge_dim=input_edge_dim,
+                         output_node_dim=output_node_dim,
+                         pos_dim=pos_dim)
+    # print(model)
 
     # Convert model to correct precision
     # Note: For bfloat16 with AMP, we keep the model in float32
@@ -215,50 +104,12 @@ def main(params):
 
     # Training configuration
     training_config = params['training']
-    optimizer = torch.optim.Adam(
-        model.parameters(), 
-        lr=training_config.get('learning_rate'),
-        
-        weight_decay=training_config.get('weight_decay')
-    )
-    
 
-    if training_config.get('scheduler') == 'ExponentialLR':
-        scheduler = torch.optim.lr_scheduler.ExponentialLR(
-            optimizer,
-            gamma=training_config.get('lr_scheduler_exp_gamma')
-        )
-    elif training_config.get('scheduler') == 'CosineAnnealingLR':
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer,
-            T_max=training_config.get('epochs'),
-            eta_min=1e-7
-        )
-    elif training_config.get('scheduler') == 'CosineAnnealingWarmRestarts':
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
-            optimizer,
-            T_0=training_config.get('lr_scheduler_T_0'),
-            T_mult=1,
-            eta_min=1e-7
-        )
-    elif training_config.get('scheduler') == 'ReduceLROnPlateau':
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer,
-            mode='min',
-            factor=training_config.get('lr_scheduler_gamma'),
-            patience=training_config.get('lr_scheduler_step_size'),
-            min_lr=1e-7
-        )
-    elif training_config.get('scheduler') == "Warmup":
-        from utils import WarmupCosineDecayScheduler
-        scheduler = WarmupCosineDecayScheduler(
-            optimizer,
-            warmup=training_config.get('warmup_steps', 100),
-            max_iters=training_config.get('epochs')
-        )
-    else:
-        raise ValueError(f"Unknown scheduler type: {training_config.get('scheduler')}. Supported types: 'ExponentialLR', 'ReduceLROnPlateau', 'CosineAnnealingLR', 'CosineAnnealingWarmRestarts'")  
-    
+    # Create optimizer and scheduler
+    optimizer = create_optimizer(model, training_config)
+
+    scheduler = create_scheduler(optimizer, training_config)
+
     loss_fn = nn.MSELoss()
 
     # Training loop

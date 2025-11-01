@@ -48,7 +48,7 @@ model:
     num_hidden_layers_node_processor: 2
     num_hidden_layers_edge_processor: 2
     dropout: 0.0
-    do_concat_trick: True
+    do_concat_trick: False
 
   fouriermgn:
     processor_size: 15
@@ -103,6 +103,7 @@ training:
     batch_size: 32
     epochs: 50
     learning_rate: 0.001
+    optimizer: "AdamW"  # options: "Adam", "AdamW"
     scheduler: "ExponentialLR"  # options: "ExponentialLR", "ReduceLROnPlateau", "CosineAnnealingLR", "CosineAnnealingWarmRestarts", "Warmup"
     warmup_steps: 100
     lr_scheduler_exp_gamma: 0.9985
@@ -249,7 +250,14 @@ experiments:
     test_num_samples: 5
     hidden_dim: 32
 
-  missile3d1:
-    dataset: missile_3d_1
+  missile_3d1_mgn:
+    dataset: missile_3d1
     model: meshgraphnet
     training: default
+    data_dir: /home/hakan/MEGA/GNN/data/Missile3d1/raw
+    batch_size: 1
+    train_num_samples: 8
+    val_num_samples: 1
+    test_num_samples: 1
+    epochs: 500
+    hidden_dim: 16
