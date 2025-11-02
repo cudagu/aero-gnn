@@ -9,6 +9,7 @@ from collections import defaultdict
 import pyvista as pv
 from torch_geometric.utils import is_undirected, to_undirected
 from torch_geometric.data import Dataset
+from utils import plot_adjacency_matrix
 
 from tqdm import tqdm
 
@@ -38,6 +39,14 @@ class AeroDataset(Dataset):
             self._load_ahmed_body()
         else:
             raise ValueError(f"Unknown dataset type: {dataset_type}")
+
+        plot_adjacency_matrix(self.data_list[0], title=f"{dataset_type} Sample Graph", save_path=f"{dataset_type}_sample_graph")
+
+        if params["training"].get("reordering") == "rcm":
+            print("Reordering graphs using RCM...")
+            self.reorder_graphs(self.data_list)
+
+        plot_adjacency_matrix(self.data_list[0], title=f"{dataset_type} Sample Graph After Reordering", save_path=f"{dataset_type}_sample_graph_reordered")
     
     def compute_edge_attr(self, data):
         """Compute edge attributes based on node positions.
@@ -522,6 +531,61 @@ class AeroDataset(Dataset):
         print(f"  Test samples: {len(test_data)}")
         
         return train_data, val_data, test_data
+    
+    def reorder_graphs(self, data_list: List[torch_geometric.data.Data]):
+        """Reorder graphs using RCM algorithm for better cache locality.
+
+        The Reverse Cuthill-McKee (RCM) algorithm reorders nodes to minimize
+        the bandwidth of the adjacency matrix, improving spatial locality for
+        better cache performance during graph traversal.
+
+        Args:
+            data_list: List of PyTorch Geometric Data objects to reorder in-place
+        """
+        from scipy.sparse import csr_matrix
+        from scipy.sparse.csgraph import reverse_cuthill_mckee
+
+        for i, data in enumerate(data_list):
+            num_nodes = data.num_nodes
+            edge_index = data.edge_index.cpu().numpy()
+
+            # Create scipy sparse adjacency matrix (CSR format for efficiency)
+            adj = csr_matrix(
+                (
+                    torch.ones(edge_index.shape[1]).numpy(),  # values
+                    (edge_index[0], edge_index[1])            # (row, col) indices
+                ),
+                shape=(num_nodes, num_nodes)
+            )
+
+            # Compute RCM ordering
+            perm = reverse_cuthill_mckee(adj, symmetric_mode=True)
+
+            # Convert permutation to torch tensor (copy to ensure positive strides)
+            perm_tensor = torch.from_numpy(perm.copy()).long()
+
+            # Reorder node features
+            data.x = data.x[perm_tensor]
+            data.pos = data.pos[perm_tensor]
+            if hasattr(data, 'normals'):
+                data.normals = data.normals[perm_tensor]
+            if hasattr(data, 'y'):
+                data.y = data.y[perm_tensor]
+
+            # Create inverse mapping (old index -> new index)
+            old_to_new = torch.empty(num_nodes, dtype=torch.long)
+            old_to_new[perm_tensor] = torch.arange(num_nodes, dtype=torch.long)
+
+            # Reorder edge_index using vectorized operations
+            data.edge_index = old_to_new[data.edge_index]
+
+            # Recompute edge attributes after reordering
+            # Edge attributes depend on node positions, so they must be recomputed
+            if hasattr(data, 'edge_attr') and data.edge_attr is not None:
+                data.edge_attr = self.compute_edge_attr(data)
+
+            data_list[i] = data
+        
 
 def read_2d_mesh(file_path: str, airfoil_name: str, dtype: torch.dtype = torch.float32) -> torch_geometric.data.Data:
     """Read an airfoil case and return a 2D surface graph.

@@ -51,6 +51,9 @@ def main(params):
         params=params,
         dtype=dtype
     )
+    
+    from utils import plot_adjacency_matrix
+    plot_adjacency_matrix(train_set[0], title=f"Train Set Sample Graph", save_path=f"train_set_sample_graph.png")
 
     # Check if using BSMS model which requires special data preprocessing
     model_name = params['model']['name']

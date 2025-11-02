@@ -123,6 +123,7 @@ training:
     loss_function: "MSELoss"
     early_stopping: True
     patience: 200
+    reordering: "rcm"  # options: "None", "rcm", "GPS"
 
 experiments:
 
@@ -219,7 +220,7 @@ experiments:
     training: default
     data_dir: /home/hakan/MEGA/GNN/data/ahmedBody/raw
     batch_size: 2
-    epochs: 500
+    epochs: 100
     train_num_samples: 50
     val_num_samples: 5
     test_num_samples: 5

@@ -15,3 +15,4 @@ CLAUDE.md
 *.pyc
 report_multiscale_properties.py
 models/BSMS_README.md
+*.png
