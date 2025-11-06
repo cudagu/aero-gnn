@@ -305,7 +305,7 @@ def plot_adjacency_matrix(
 
     fig, ax = plt.subplots(figsize=figsize)
 
-    max_display_nodes = 300000
+    max_display_nodes = 30000
     if num_nodes > max_display_nodes:
         sample_indices = np.random.choice(num_nodes, max_display_nodes, replace=False)
         sample_indices = np.sort(sample_indices)
