@@ -10,6 +10,7 @@ import pyvista as pv
 from torch_geometric.utils import is_undirected, to_undirected
 from torch_geometric.data import Dataset
 from utils import plot_adjacency_matrix
+import networkx as nx
 
 from tqdm import tqdm
 
@@ -40,13 +41,17 @@ class AeroDataset(Dataset):
         else:
             raise ValueError(f"Unknown dataset type: {dataset_type}")
 
-        plot_adjacency_matrix(self.data_list[0], title=f"{dataset_type} Sample Graph", save_path=f"{dataset_type}_sample_graph")
+        # plot_adjacency_matrix(self.data_list[0], title=f"{dataset_type} Sample Graph", save_path=f"{dataset_type}_sample_graph")
 
         if params["training"].get("reordering") == "rcm":
             print("Reordering graphs using RCM...")
             self.reorder_graphs(self.data_list)
 
-        plot_adjacency_matrix(self.data_list[0], title=f"{dataset_type} Sample Graph After Reordering", save_path=f"{dataset_type}_sample_graph_reordered")
+        # NOTE: Clustering coefficient calculation is expensive - only use for analysis
+        # clustering_coeffs = [calculate_clustering_coefficient(data) for data in self.data_list]
+        # print(f"Clustering coefficients: {clustering_coeffs}")
+
+        # plot_adjacency_matrix(self.data_list[0], title=f"{dataset_type} Sample Graph After Reordering", save_path=f"{dataset_type}_sample_graph_reordered")
     
     def compute_edge_attr(self, data):
         """Compute edge attributes based on node positions.
@@ -545,7 +550,8 @@ class AeroDataset(Dataset):
         from scipy.sparse import csr_matrix
         from scipy.sparse.csgraph import reverse_cuthill_mckee
 
-        for i, data in enumerate(data_list):
+        pbar = tqdm(data_list, desc="Applying RCM reordering")
+        for i, data in enumerate(pbar):
             num_nodes = data.num_nodes
             edge_index = data.edge_index.cpu().numpy()
 
@@ -761,3 +767,28 @@ def load_normalization_stats(file_path):
     norm_stats = torch.load(file_path)
     print(f"Normalization statistics loaded from {file_path}")
     return norm_stats
+
+
+def calculate_clustering_coefficient(data: torch_geometric.data.Data) -> float:
+    """
+    Calculate the average clustering coefficient of a graph using NetworkX.
+
+    The clustering coefficient measures how close the node's neighbors are to
+    being a complete graph (clique).
+
+    Args:
+        data: PyTorch Geometric Data object with edge_index attribute
+
+    Returns:
+        Average clustering coefficient across all nodes
+    """
+    edge_index = data.edge_index.cpu().numpy()
+    num_nodes = data.num_nodes
+
+    # Create NetworkX undirected graph
+    G = nx.Graph()
+    G.add_nodes_from(range(num_nodes))
+    G.add_edges_from(zip(edge_index[0], edge_index[1]))
+
+    # Calculate average clustering coefficient
+    return nx.average_clustering(G)
