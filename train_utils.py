@@ -2,7 +2,7 @@ import torch
 import torch.optim as optim
 import numpy as np
 
-def train(model, loader, optimizer, loss_fn, device, use_amp=False, amp_dtype=None):
+def train(model, loader, optimizer, loss_fn, device, use_amp=False, amp_dtype=None, profiler=None):
     """Train the model for one epoch.
 
     Args:
@@ -13,6 +13,7 @@ def train(model, loader, optimizer, loss_fn, device, use_amp=False, amp_dtype=No
         device: Device to use
         use_amp: Whether to use automatic mixed precision
         amp_dtype: Data type for AMP (e.g., torch.bfloat16)
+        profiler: Optional PyTorch profiler instance
     """
     model.train()
     total_loss = 0.0
@@ -44,6 +45,15 @@ def train(model, loader, optimizer, loss_fn, device, use_amp=False, amp_dtype=No
 
                 elif model_class in ['MLPNet']:
                     pred = model(batch.x)
+
+                elif model_class == 'TransolverAero':
+                    # Transolver uses batch tensor for PyG batching
+                    pred = model(batch.x, batch.edge_attr, batch.edge_index, batch.batch)
+
+                elif model_class == 'GCN':
+                    # GCN only needs node features and edge_index
+                    pred = model(batch.x, batch.edge_index)
+
                 else:
                     pred = model(batch.x, batch.edge_attr, batch.edge_index)
 
@@ -65,6 +75,15 @@ def train(model, loader, optimizer, loss_fn, device, use_amp=False, amp_dtype=No
 
             elif model_class in ['MLPNet']:
                 pred = model(batch.x)
+
+            elif model_class == 'TransolverAero':
+                # Transolver uses batch tensor for PyG batching
+                pred = model(batch.x, batch.edge_attr, batch.edge_index, batch.batch)
+
+            elif model_class == 'GCN':
+                # GCN only needs node features and edge_index
+                pred = model(batch.x, batch.edge_index)
+
             else:
                 pred = model(batch.x, batch.edge_attr, batch.edge_index)
 
@@ -73,11 +92,16 @@ def train(model, loader, optimizer, loss_fn, device, use_amp=False, amp_dtype=No
         loss.backward()
         optimizer.step()
         optimizer.zero_grad()
-        total_loss += loss.item()
-    return total_loss / len(loader)
+        total_loss += loss.detach()
+
+        # Step profiler if active
+        if profiler is not None:
+            profiler.step()
+
+    return total_loss.sum().item() / len(loader)
 
 @torch.no_grad()
-def evaluate(model, loader, loss_fn, device, use_amp=False, amp_dtype=None):
+def evaluate(model, loader, loss_fn, device, use_amp=False, amp_dtype=None, profiler=None):
     """Evaluate the model.
 
     Args:
@@ -87,6 +111,7 @@ def evaluate(model, loader, loss_fn, device, use_amp=False, amp_dtype=None):
         device: Device to use
         use_amp: Whether to use automatic mixed precision
         amp_dtype: Data type for AMP (e.g., torch.bfloat16)
+        profiler: Optional PyTorch profiler instance
     """
     model.eval()
     total_loss = 0.0
@@ -117,6 +142,15 @@ def evaluate(model, loader, loss_fn, device, use_amp=False, amp_dtype=None):
                     pred = model(batch.x, batch.edge_attr, batch.edge_index, batch.batch)
                 elif model_class in ['MLPNet']:
                     pred = model(batch.x)
+
+                elif model_class == 'TransolverAero':
+                    # Transolver uses batch tensor for PyG batching
+                    pred = model(batch.x, batch.edge_attr, batch.edge_index, batch.batch)
+
+                elif model_class == 'GCN':
+                    # GCN only needs node features and edge_index
+                    pred = model(batch.x, batch.edge_index)
+
                 else:
                     pred = model(batch.x, batch.edge_attr, batch.edge_index)
 
@@ -137,13 +171,27 @@ def evaluate(model, loader, loss_fn, device, use_amp=False, amp_dtype=None):
                 pred = model(batch.x, batch.edge_attr, batch.edge_index, batch.batch)
             elif model_class in ['MLPNet']:
                 pred = model(batch.x)
+
+            elif model_class == 'TransolverAero':
+                # Transolver uses batch tensor for PyG batching
+                pred = model(batch.x, batch.edge_attr, batch.edge_index, batch.batch)
+
+            elif model_class == 'GCN':
+                # GCN only needs node features and edge_index
+                pred = model(batch.x, batch.edge_index)
+
             else:
                 pred = model(batch.x, batch.edge_attr, batch.edge_index)
 
             loss = loss_fn(pred, batch.y)
 
-        total_loss += loss.item()
-    return total_loss / len(loader)
+        total_loss += loss.detach()
+
+        # Step profiler if active
+        if profiler is not None:
+            profiler.step()
+
+    return total_loss.sum().item() / len(loader)
 
 def create_model(model_config: dict, 
                  input_node_dim: int, 
@@ -280,9 +328,64 @@ def create_model(model_config: dict,
             activation_fn=model_config.get('activation_fn', 'relu'),
             dropout=model_config.get('dropout', 0.0)
         )
+    
+    elif model_name == 'weightedgraphnet':
+        from models.weightedGraphNet import WeightedGraphNet
+        model = WeightedGraphNet(
+            input_node_dim=input_node_dim,
+            input_edge_dim=input_edge_dim,
+            output_node_dim=output_node_dim,
+            processor_size=model_config.get('processor_size'),
+            activation_fn=model_config.get('activation_fn'),
+            num_hidden_layers_edge_weight=model_config.get('num_hidden_layers_edge_weight'),
+            num_hidden_layers_node_update=model_config.get('num_hidden_layers_node_update'),
+            hidden_dim_processor=model_config.get('hidden_dim'),
+            num_hidden_layers_node_encoder=model_config.get('num_hidden_layers_node_encoder'),
+            hidden_dim_node_encoder=model_config.get('hidden_dim'),
+            num_hidden_layers_edge_encoder=model_config.get('num_hidden_layers_edge_encoder'),
+            hidden_dim_edge_encoder=model_config.get('hidden_dim'),
+            aggregation=model_config.get('aggregation'),
+            hidden_dim_decoder=model_config.get('hidden_dim'),
+            num_hidden_layers_decoder=model_config.get('num_hidden_layers_decoder'),
+            dropout=model_config.get('dropout')
+        )
+
+    elif model_name == 'transolver':
+        from models.transolver import TransolverAero
+        model = TransolverAero(
+            input_node_dim=input_node_dim,
+            output_node_dim=output_node_dim,
+            space_dim=pos_dim,  # 2 for 2D, 3 for 3D
+            n_layers=model_config.get('n_layers', 6),
+            n_hidden=model_config.get('n_hidden', 256),
+            dropout=model_config.get('dropout', 0.0),
+            n_head=model_config.get('n_head', 8),
+            act=model_config.get('act', 'gelu'),
+            mlp_ratio=model_config.get('mlp_ratio', 4),
+            slice_num=model_config.get('slice_num', 32),
+            use_checkpoint=model_config.get('use_checkpoint', True),
+            fourier_features=model_config.get('fourier_features', False),
+            fourier_dim=model_config.get('fourier_dim', 0),
+            condition_dim=model_config.get('condition_dim', 0),
+        )
+
+    elif model_name == 'gcn':
+        from models.gcn import GCN
+        model = GCN(
+            input_node_dim=input_node_dim,
+            output_node_dim=output_node_dim,
+            processor_size=model_config.get('processor_size', 15),
+            activation_fn=model_config.get('activation_fn', 'relu'),
+            hidden_dim_processor=model_config.get('hidden_dim', 128),
+            num_hidden_layers_node_encoder=model_config.get('num_hidden_layers_node_encoder', 1),
+            hidden_dim_node_encoder=model_config.get('hidden_dim', 128),
+            hidden_dim_decoder=model_config.get('hidden_dim', 128),
+            num_hidden_layers_decoder=model_config.get('num_hidden_layers_decoder', 1),
+            dropout=model_config.get('dropout', 0.0)
+        )
 
     else:
-        available_models = ['MLP', 'mlpnet', 'meshgraphnet', 'poolMGN', 'fouriermgn', 'trial1', 'Trial1', 'bsms_mgn']
+        available_models = ['MLP', 'mlpnet', 'meshgraphnet', 'poolMGN', 'fouriermgn', 'trial1', 'Trial1', 'bsms_mgn', 'weightedgraphnet', 'transolver', 'gcn']
         raise ValueError(
             f"Unknown model type: '{model_name}'. "
             f"Available models: {', '.join(available_models)}"
@@ -318,7 +421,8 @@ def create_optimizer(model, training_config):
         optimizer = torch.optim.AdamW(
             model.parameters(),
             lr=learning_rate,
-            weight_decay=weight_decay
+            weight_decay=weight_decay,
+            fused=True
         )
     else:
         raise ValueError(
