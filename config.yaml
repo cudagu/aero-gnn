@@ -50,6 +50,18 @@ model:
     dropout: 0.0
     do_concat_trick: False
 
+  weightedgraphnet:
+    processor_size: 15
+    activation_fn: "relu"
+    hidden_dim: 128
+    aggregation: "add"
+    num_hidden_layers_decoder: 2
+    num_hidden_layers_node_encoder: 2
+    num_hidden_layers_edge_encoder: 2
+    num_hidden_layers_edge_weight: 2
+    num_hidden_layers_node_update: 2
+    dropout: 0.0
+
   fouriermgn:
     processor_size: 15
     activation_fn: "relu"
@@ -96,6 +108,27 @@ model:
     activation_fn: "relu"
     dropout: 0.0
 
+  transolver:
+    n_layers: 6  # Number of transformer blocks
+    n_hidden: 256  # Hidden dimension
+    n_head: 8  # Number of attention heads
+    dropout: 0.0
+    act: "gelu"  # Activation function (gelu recommended for transformers)
+    mlp_ratio: 4  # MLP expansion ratio (4x is standard)
+    slice_num: 32  # Number of eidetic states (16-64 range)
+    use_checkpoint: True  # Gradient checkpointing to save memory
+    fourier_features: False  # Apply Fourier encoding to positions
+    fourier_dim: 0  # Dimension of Fourier features (if enabled)
+    condition_dim: 0  # Dimension of global condition vector
+
+  gcn:
+    processor_size: 15  # Number of GCN layers
+    activation_fn: "relu"
+    hidden_dim: 128
+    num_hidden_layers_node_encoder: 1
+    num_hidden_layers_decoder: 1
+    dropout: 0.0
+
 
 # Training configuration
 training:
@@ -118,12 +151,19 @@ training:
     test_num_samples: None
     shuffle: True
     random_seed: 42
-    precision: "bfloat16"  # options: "single", "double", "bfloat16"
+    precision: "single"  # options: "single", "double", "bfloat16"
     device: "cuda:0"
     loss_function: "MSELoss"
     early_stopping: True
     patience: 200
-    reordering: "rcm"  # options: "None", "rcm", "GPS"
+    reordering: "None"  # options: "None", "rcm", "GPS"
+    # Profiling settings
+    enable_profiling: False  # Set to True to enable PyTorch profiler
+    profile_epochs: 1  # Number of epochs to profile (profiles early epochs)
+    profile_wait: 1  # Warm-up epochs before profiling
+    profile_warmup: 3  # Number of warmup steps in profiling
+    profile_active: 3  # Number of active profiling steps per epoch
+    profile_repeat: 1  # Number of cycles to repeat
 
 experiments:
 
@@ -220,11 +260,12 @@ experiments:
     training: default
     data_dir: /home/hakan/MEGA/GNN/data/ahmedBody/raw
     batch_size: 2
-    epochs: 100
+    epochs: 400
     train_num_samples: 50
     val_num_samples: 5
     test_num_samples: 5
     hidden_dim: 32
+    enable_profiling: False
   
   ahmedBody_fourier_mgn:
     dataset: ahmed_body
@@ -262,3 +303,74 @@ experiments:
     test_num_samples: 1
     epochs: 500
     hidden_dim: 16
+
+  airfoil_transolver:
+    dataset: airfoil_2d
+    model: transolver
+    training: default
+    mach: [0.7, 0.8]
+    alpha: [-5, 5]
+    data_dir: /home/hakan/MEGA/GNN/data/Airfoil_2d/raw
+    batch_size: 16  # Transolver can use larger batches than BSMS
+    epochs: 1000
+    random_seed: 402
+    test_split: 0.2
+    n_hidden: 256
+    n_layers: 6
+    slice_num: 32
+    learning_rate: 0.0003  # Lower LR for transformer
+
+  ahmedBody_transolver:
+    dataset: ahmed_body
+    model: transolver
+    training: default
+    data_dir: /home/hakan/MEGA/GNN/data/ahmedBody/raw
+    batch_size: 2
+    epochs: 500
+    train_num_samples: 50
+    val_num_samples: 5
+    test_num_samples: 5
+    n_hidden: 128  # Smaller for memory efficiency on 3D
+    n_layers: 6
+    slice_num: 64  # More eidetic states for larger 3D mesh
+    learning_rate: 0.0002
+
+  airfoil_gcn:
+    dataset: airfoil_2d
+    model: gcn
+    training: default
+    mach: [0.86]
+    alpha: [3]
+    data_dir: /home/hakan/MEGA/GNN/data/Airfoil_2d/raw
+    batch_size: 32
+    epochs: 1000
+    random_seed: 402
+    test_split: 0.2
+    hidden_dim: 128
+    processor_size: 15
+
+  ahmedBody_gcn:
+    dataset: ahmed_body
+    model: gcn
+    training: default
+    data_dir: /home/hakan/MEGA/GNN/data/ahmedBody/raw
+    batch_size: 50
+    epochs: 100
+    train_num_samples: 50
+    val_num_samples: 5
+    test_num_samples: 5
+    hidden_dim: 16
+    processor_size: 1
+
+  missile_3d1_gcn:
+    dataset: missile_3d1
+    model: gcn
+    training: default
+    data_dir: /home/hakan/MEGA/GNN/data/Missile3d1/raw
+    batch_size: 1
+    train_num_samples: 20
+    val_num_samples: 2
+    test_num_samples: 2
+    epochs: 60
+    hidden_dim: 64
+    processor_size: 2
