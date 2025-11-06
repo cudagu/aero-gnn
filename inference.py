@@ -144,6 +144,15 @@ class AeroInference:
                 elif model_class in ['MLPNet']:
                     pred_scaled = self.model(data.x)
 
+                elif model_class == 'TransolverAero':
+                    # Transolver uses batch tensor for PyG batching
+                    batch = torch.zeros(data.x.size(0), dtype=torch.long, device=self.device)
+                    pred_scaled = self.model(data.x, data.edge_attr, data.edge_index, batch)
+
+                elif model_class == 'GCN':
+                    # GCN only needs node features and edge_index
+                    pred_scaled = self.model(data.x, data.edge_index)
+
                 else:
                     pred_scaled = self.model(data.x, data.edge_attr, data.edge_index)
         else:
@@ -165,6 +174,15 @@ class AeroInference:
 
             elif model_class in ['MLPNet']:
                 pred_scaled = self.model(data.x)
+
+            elif model_class == 'TransolverAero':
+                # Transolver uses batch tensor for PyG batching
+                batch = torch.zeros(data.x.size(0), dtype=torch.long, device=self.device)
+                pred_scaled = self.model(data.x, data.edge_attr, data.edge_index, batch)
+
+            elif model_class == 'GCN':
+                # GCN only needs node features and edge_index
+                pred_scaled = self.model(data.x, data.edge_index)
 
             else:
                 pred_scaled = self.model(data.x, data.edge_attr, data.edge_index)
