@@ -6,6 +6,7 @@ import torch_geometric
 from torch_geometric.nn import global_mean_pool, global_max_pool, global_add_pool
 import torch.nn.functional as F
 from models.mlp import MLP
+from models.profiling_utils import get_profiler
 
 class EdgeBlock(nn.Module):
     """Edge processing block for MeshGraphNet."""
@@ -33,19 +34,29 @@ class EdgeBlock(nn.Module):
         """
         Args:
             edge_attr: [num_edges, edge_dim]
-            node_attr: [num_nodes, node_dim] 
+            node_attr: [num_nodes, node_dim]
             edge_index: [2, num_edges] - [source, target] node indices
         """
-        row, col = edge_index 
-        sender_nodes = node_attr[row]  # [num_edges, node_dim]
-        receiver_nodes = node_attr[col]  # [num_edges, node_dim]
-        
+        profiler = get_profiler()
+
+        row, col = edge_index
+
+        # Profile gather operations
+        with profiler.profile("edge_gather_sender"):
+            sender_nodes = node_attr[row]  # [num_edges, node_dim]
+
+        with profiler.profile("edge_gather_receiver"):
+            receiver_nodes = node_attr[col]  # [num_edges, node_dim]
+
         # Concatenate edge features with sender and receiver node features
-        edge_input = torch.cat([edge_attr, sender_nodes, receiver_nodes], dim=-1)
+        with profiler.profile("edge_concat"):
+            edge_input = torch.cat([edge_attr, sender_nodes, receiver_nodes], dim=-1)
         # edge_input = edge_attr
-        
-        edge_update = self.mlp(edge_input)
-        
+
+        # Profile edge MLP computation
+        with profiler.profile("edge_mlp_computation"):
+            edge_update = self.mlp(edge_input)
+
         return edge_update
     
 class EdgeBlockSum(nn.Module):
@@ -91,17 +102,30 @@ class EdgeBlockSum(nn.Module):
         self.mlp = nn.Sequential(*layers)
         
     def forward(self, edge_attr, node_attr, edge_index):
+        profiler = get_profiler()
+
         src_feat = node_attr
         dst_feat = node_attr
-        
-        mlp_edge_attr = F.linear(edge_attr, self.edge_lin, None)
-        mlp_src_feat = F.linear(src_feat, self.src_lin, None)
-        mlp_dst_feat = F.linear(dst_feat, self.dst_lin, self.bias)
-        
+
+        # Profile linear projections
+        with profiler.profile("edgesum_linear_edge"):
+            mlp_edge_attr = F.linear(edge_attr, self.edge_lin, None)
+
+        with profiler.profile("edgesum_linear_src"):
+            mlp_src_feat = F.linear(src_feat, self.src_lin, None)
+
+        with profiler.profile("edgesum_linear_dst"):
+            mlp_dst_feat = F.linear(dst_feat, self.dst_lin, self.bias)
+
         src, dst = edge_index.long()
-        
-        mlp_sum = mlp_edge_attr + mlp_src_feat[src] + mlp_dst_feat[dst]
-        edge_update = self.mlp(mlp_sum)
+
+        # Profile gather and sum operations
+        with profiler.profile("edgesum_gather_and_sum"):
+            mlp_sum = mlp_edge_attr + mlp_src_feat[src] + mlp_dst_feat[dst]
+
+        with profiler.profile("edgesum_mlp_computation"):
+            edge_update = self.mlp(mlp_sum)
+
         return edge_update
         
         
@@ -138,20 +162,26 @@ class NodeBlock(nn.Module):
             edge_attr: [num_edges, edge_dim]
             edge_index: [2, num_edges] - [source, target] node indices
         """
-        row, col = edge_index 
-        # Aggregate edge features for each node (using sum aggregation)
-    
-        if self.aggregation == 'mean':
-            edge_aggr = scatter_mean(edge_attr, col, dim=0, dim_size=node_attr.size(0))
-        elif self.aggregation == 'add':  
-            edge_aggr = scatter_add(edge_attr, col, dim=0, dim_size=node_attr.size(0))
-        else:
-            raise ValueError(f"Unsupported aggregation method: {self.aggregation}")
-            
-        # # Concatenate node features with aggregated edge features
-        node_input = torch.cat([node_attr, edge_aggr], dim=-1)
-        
-        return self.mlp(node_input)
+        profiler = get_profiler()
+
+        row, col = edge_index
+
+        # Aggregate edge features for each node (using scatter operations)
+        with profiler.profile(f"node_scatter_{self.aggregation}"):
+            if self.aggregation == 'mean':
+                edge_aggr = scatter_mean(edge_attr, col, dim=0, dim_size=node_attr.size(0))
+            elif self.aggregation == 'add':
+                edge_aggr = scatter_add(edge_attr, col, dim=0, dim_size=node_attr.size(0))
+            else:
+                raise ValueError(f"Unsupported aggregation method: {self.aggregation}")
+
+        # Concatenate node features with aggregated edge features
+        with profiler.profile("node_concat"):
+            node_input = torch.cat([node_attr, edge_aggr], dim=-1)
+
+        # Profile node MLP computation
+        with profiler.profile("node_mlp_computation"):
+            return self.mlp(node_input)
     
     
 class MeshGraphNetLayer(nn.Module):
@@ -181,36 +211,24 @@ class MeshGraphNetLayer(nn.Module):
         """
         Args:
             node_attr: [num_nodes, node_dim]
-            edge_attr: [num_edges, edge_dim]  
+            edge_attr: [num_edges, edge_dim]
             edge_index: [2, num_edges]
         """
+        profiler = get_profiler()
+
         # Process edges
-        # Memory monitoring - before edge_block
-        mem_before = max_mem_before = 0.0
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-            mem_before = torch.cuda.memory_allocated() / (1024 ** 2)  # MB
-            max_mem_before = torch.cuda.max_memory_allocated() / (1024 ** 2)  # MB
-        
-        edge_attr_new = self.edge_block(edge_attr, node_attr, edge_index)
-        
-        # Memory monitoring - after edge_block
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-            mem_after = torch.cuda.memory_allocated() / (1024 ** 2)  # MB
-            max_mem_after = torch.cuda.max_memory_allocated() / (1024 ** 2)  # MB
-            mem_diff = mem_after - mem_before
-            max_mem_diff = max_mem_after - max_mem_before
-            if not hasattr(self, '_edge_block_mem_logged'):
-                print(f"EdgeBlock - Allocated: {mem_diff:.2f} MB, Peak increase: {max_mem_diff:.2f} MB")
-                self._edge_block_mem_logged = True
-        
-        edge_attr = edge_attr + edge_attr_new
-        
+        with profiler.profile("total_edge_block"):
+            edge_attr_new = self.edge_block(edge_attr, node_attr, edge_index)
+
+        with profiler.profile("edge_residual"):
+            edge_attr = edge_attr + edge_attr_new
+
         # Process nodes
-        node_attr_new = self.node_block(node_attr, edge_attr, edge_index)
-        
+        with profiler.profile("total_node_block"):
+            node_attr_new = self.node_block(node_attr, edge_attr, edge_index)
+
         # Residual connections
-        node_attr = node_attr + node_attr_new
-        
+        with profiler.profile("node_residual"):
+            node_attr = node_attr + node_attr_new
+
         return node_attr, edge_attr

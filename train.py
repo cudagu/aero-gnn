@@ -16,6 +16,10 @@ from tqdm import tqdm
 import random
 from collections import defaultdict
 
+# Set matplotlib to non-interactive backend to avoid tkinter issues with DataLoader multiprocessing
+# import matplotlib
+# matplotlib.use('Agg')
+
 #%%Main
 def main(params):
     # Set up precision (float32 or float64)
@@ -53,7 +57,7 @@ def main(params):
     )
     
     from utils import plot_adjacency_matrix
-    plot_adjacency_matrix(train_set[0], title=f"Train Set Sample Graph", save_path=f"train_set_sample_graph.png")
+    # plot_adjacency_matrix(train_set[0], title=f"Train Set Sample Graph", save_path=f"train_set_sample_graph.png")
 
     # Check if using BSMS model which requires special data preprocessing
     model_name = params['model']['name']
@@ -69,9 +73,43 @@ def main(params):
 
         train_loader = BSMSDataLoader(train_set, batch_size=1, shuffle=True)
         val_loader = BSMSDataLoader(val_set, batch_size=1, shuffle=False)
+
+    elif model_name == 'graphspectral_transolver':
+        from models.graphSpectralTransolver import add_spectral_features_to_dataset
+
+        print("\n=== Precomputing Spectral Features for Graph Spectral Transolver ===")
+        spectral_dim = params['model'].get('spectral_dim', 8)
+        laplacian_norm = params['model'].get('laplacian_norm', 'sym')
+
+        train_set = add_spectral_features_to_dataset(train_set, spectral_dim, laplacian_norm, verbose=True)
+        val_set = add_spectral_features_to_dataset(val_set, spectral_dim, laplacian_norm, verbose=True)
+        test_set = add_spectral_features_to_dataset(test_set, spectral_dim, laplacian_norm, verbose=True)
+
+        train_loader = DataLoader(train_set, batch_size=params['training']['batch_size'],
+                                  shuffle=True, pin_memory=True)
+        val_loader = DataLoader(val_set, batch_size=params['training']['batch_size'],
+                                pin_memory=True)
+
+    elif model_name == 'graphdistance_transolver':
+        from models.graphDistanceTransolver import add_graph_distances_to_dataset, GraphDistanceDataLoader
+
+        print("\n=== Precomputing Graph Distances for Graph Distance Transolver ===")
+        max_hops = params['model'].get('max_hops', 5)
+
+        train_set = add_graph_distances_to_dataset(train_set, max_hops, verbose=True)
+        val_set = add_graph_distances_to_dataset(val_set, max_hops, verbose=True)
+        test_set = add_graph_distances_to_dataset(test_set, max_hops, verbose=True)
+
+        train_loader = GraphDistanceDataLoader(train_set, batch_size=params['training']['batch_size'],
+                                              shuffle=True, pin_memory=True)
+        val_loader = GraphDistanceDataLoader(val_set, batch_size=params['training']['batch_size'],
+                                            pin_memory=True)
+
     else:
-        train_loader = DataLoader(train_set, batch_size=params['training']['batch_size'], shuffle=True)
-        val_loader = DataLoader(val_set, batch_size=params['training']['batch_size'])
+        train_loader = DataLoader(train_set, batch_size=params['training']['batch_size'],
+                                  shuffle=True, pin_memory=True)
+        val_loader = DataLoader(val_set, batch_size=params['training']['batch_size'],
+                                pin_memory=True)
 
 
     device = torch.device(params["training"]["device"] if torch.cuda.is_available() else 'cpu')
@@ -116,20 +154,62 @@ def main(params):
     loss_fn = nn.MSELoss()
 
     # Training loop
-    
+
     if training_config.get('epochs', 0) > 0:
-        
+
         train_losses = []
         val_losses = []
         lr_list = []
         iterator = tqdm(range(training_config['epochs']))
         val_loss_min = float('inf')
         patience_counter = 0
-        
+
+        # Start training timer
+        import time
+        training_start_time = time.time()
+
+        # Profiling setup
+        profiler = None
+        enable_profiling = training_config.get('enable_profiling', False)
+
+        if enable_profiling:
+            from torch.profiler import profile, record_function, ProfilerActivity, schedule
+
+            # Configure profiler schedule
+            profile_wait = training_config.get('profile_wait', 1)
+            profile_warmup = training_config.get('profile_warmup', 1)
+            profile_active = training_config.get('profile_active', 3)
+            profile_repeat = training_config.get('profile_repeat', 1)
+
+            print(f"\n{'='*60}")
+            print(f"PROFILING ENABLED")
+            print(f"{'='*60}")
+            print(f"Wait steps: {profile_wait}")
+            print(f"Warmup steps: {profile_warmup}")
+            print(f"Active steps: {profile_active}")
+            print(f"Repeat: {profile_repeat}")
+            print(f"{'='*60}\n")
+
+            # Create profiler
+            profiler = profile(
+                activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA] if torch.cuda.is_available() else [ProfilerActivity.CPU],
+                schedule=schedule(
+                    wait=profile_wait,
+                    warmup=profile_warmup,
+                    active=profile_active,
+                    repeat=profile_repeat
+                ),
+                on_trace_ready=lambda prof: None,  # We'll save manually later
+                record_shapes=True,
+                profile_memory=True,
+                with_stack=True
+            )
+            profiler.__enter__()  # Start profiler context
+
         for epoch in iterator:
 
-            train_loss = train(model, train_loader, optimizer, loss_fn, device, use_amp=use_amp, amp_dtype=amp_dtype)
-            val_loss = evaluate(model, val_loader, loss_fn, device, use_amp=use_amp, amp_dtype=amp_dtype)
+            train_loss = train(model, train_loader, optimizer, loss_fn, device, use_amp=use_amp, amp_dtype=amp_dtype, profiler=profiler)
+            val_loss = evaluate(model, val_loader, loss_fn, device, use_amp=use_amp, amp_dtype=amp_dtype, profiler=profiler)
             if training_config.get('scheduler') == 'ReduceLROnPlateau':
                 scheduler.step(val_loss)
             else:
@@ -151,9 +231,21 @@ def main(params):
             train_losses.append(train_loss)
             val_losses.append(val_loss)
             lr_list.append(current_lr)
-        
+
+        # Close profiler and save results
+        if profiler is not None:
+            profiler.__exit__(None, None, None)  # Exit profiler context
+            print("\nProfiling complete. Generating reports...")
+
+        # Calculate total training time
+        training_end_time = time.time()
+        total_training_time = training_end_time - training_start_time
+        avg_epoch_time = total_training_time / len(train_losses) if len(train_losses) > 0 else 0
+
         print("\nTraining complete.")
-        
+        print(f"Total training time: {total_training_time:.2f} seconds ({total_training_time/60:.2f} minutes)")
+        print(f"Average time per epoch: {avg_epoch_time:.2f} seconds")
+
         # Create output directory with date folder structure
         now = datetime.datetime.now()
         date_folder = now.strftime("%d-%m-%Y")  # e.g., "22-09-2024"
@@ -165,7 +257,116 @@ def main(params):
         run_folder = f"{time_stamp}-{model_info}"
         save_dir = os.path.join("training_runs", date_folder, run_folder)
         os.makedirs(save_dir, exist_ok=True)
-        
+
+        # Save profiling results if profiler was used
+        if profiler is not None:
+            profile_dir = os.path.join(save_dir, "profiling")
+            os.makedirs(profile_dir, exist_ok=True)
+
+            print(f"\nSaving profiling results to {profile_dir}...")
+
+            # Save detailed trace (Chrome trace format - can be viewed in chrome://tracing)
+            profiler.export_chrome_trace(os.path.join(profile_dir, "trace.json"))
+            print(f"  - Chrome trace saved to {profile_dir}/trace.json")
+            print(f"    View in Chrome: chrome://tracing or ui.perfetto.dev")
+
+            # Check if CUDA metrics are available (do this once for all reports)
+            key_avg = profiler.key_averages()
+            has_cuda_metrics = torch.cuda.is_available() and len(key_avg) > 0 and hasattr(key_avg[0], 'cuda_time_total')
+
+            # Generate and save table reports
+            with open(os.path.join(profile_dir, "profiling_report.txt"), "w") as f:
+                f.write("="*100 + "\n")
+                f.write("PYTORCH PROFILING REPORT\n")
+                f.write("="*100 + "\n\n")
+
+                # CPU time report
+                f.write("TOP OPERATIONS BY CPU TIME\n")
+                f.write("-"*100 + "\n")
+                f.write(profiler.key_averages().table(sort_by="cpu_time_total", row_limit=30))
+                f.write("\n\n")
+
+                # CUDA time report (if available)
+                if has_cuda_metrics:
+                    f.write("TOP OPERATIONS BY CUDA TIME\n")
+                    f.write("-"*100 + "\n")
+                    try:
+                        f.write(profiler.key_averages().table(sort_by="cuda_time_total", row_limit=30))
+                    except (AttributeError, KeyError):
+                        f.write("CUDA time data not available\n")
+                    f.write("\n\n")
+
+                    # Memory report
+                    f.write("TOP OPERATIONS BY CUDA MEMORY USAGE\n")
+                    f.write("-"*100 + "\n")
+                    try:
+                        f.write(profiler.key_averages().table(sort_by="cuda_memory_usage", row_limit=30))
+                    except (AttributeError, KeyError):
+                        f.write("CUDA memory data not available\n")
+                    f.write("\n\n")
+
+                # Self time (time spent in operation itself, excluding callees)
+                f.write("TOP OPERATIONS BY SELF CPU TIME\n")
+                f.write("-"*100 + "\n")
+                f.write(profiler.key_averages().table(sort_by="self_cpu_time_total", row_limit=30))
+                f.write("\n\n")
+
+                if has_cuda_metrics:
+                    f.write("TOP OPERATIONS BY SELF CUDA TIME\n")
+                    f.write("-"*100 + "\n")
+                    try:
+                        f.write(profiler.key_averages().table(sort_by="self_cuda_time_total", row_limit=30))
+                    except (AttributeError, KeyError):
+                        f.write("CUDA time data not available\n")
+                    f.write("\n\n")
+
+                # Grouped by input shapes
+                f.write("OPERATIONS GROUPED BY INPUT SHAPES\n")
+                f.write("-"*100 + "\n")
+                f.write(profiler.key_averages(group_by_input_shape=True).table(sort_by="cpu_time_total", row_limit=30))
+                f.write("\n\n")
+
+            print(f"  - Detailed text report saved to {profile_dir}/profiling_report.txt")
+
+            # Create a concise summary
+            with open(os.path.join(profile_dir, "profiling_summary.txt"), "w") as f:
+                f.write("PROFILING SUMMARY\n")
+                f.write("="*60 + "\n\n")
+
+                # Calculate totals
+                total_cpu_time = sum([item.cpu_time_total for item in key_avg])
+
+                f.write(f"Total CPU Time: {total_cpu_time/1e6:.2f} ms\n")
+
+                if has_cuda_metrics:
+                    total_cuda_time = sum([getattr(item, 'cuda_time_total', 0) for item in key_avg])
+                    total_cuda_memory = sum([getattr(item, 'cuda_memory_usage', 0) for item in key_avg])
+
+                    f.write(f"Total CUDA Time: {total_cuda_time/1e6:.2f} ms\n")
+                    f.write(f"Peak CUDA Memory: {total_cuda_memory/1e6:.2f} MB\n")
+
+                f.write("\nTop 10 Bottlenecks (by CPU time):\n")
+                f.write("-"*60 + "\n")
+                sorted_items = sorted(key_avg, key=lambda x: x.cpu_time_total, reverse=True)[:10]
+                for i, item in enumerate(sorted_items, 1):
+                    pct = 100.0 * item.cpu_time_total / total_cpu_time if total_cpu_time > 0 else 0
+                    f.write(f"{i}. {item.key:50s} {item.cpu_time_total/1e6:8.2f} ms ({pct:5.1f}%)\n")
+
+                # CUDA bottlenecks (requires total_cuda_time from above CUDA check)
+                if has_cuda_metrics:
+                    f.write("\nTop 10 Bottlenecks (by CUDA time):\n")
+                    f.write("-"*60 + "\n")
+                    sorted_items = sorted(key_avg, key=lambda x: getattr(x, 'cuda_time_total', 0), reverse=True)[:10]
+                    total_cuda_time_local = sum([getattr(item, 'cuda_time_total', 0) for item in key_avg])
+                    for i, item in enumerate(sorted_items, 1):
+                        cuda_time = getattr(item, 'cuda_time_total', 0)
+                        pct = 100.0 * cuda_time / total_cuda_time_local if total_cuda_time_local > 0 else 0
+                        f.write(f"{i}. {item.key:50s} {cuda_time/1e6:8.2f} ms ({pct:5.1f}%)\n")
+
+            print(f"  - Summary saved to {profile_dir}/profiling_summary.txt")
+            print(f"\nProfiler reports generated successfully!")
+            print(f"Check {profile_dir}/ for detailed profiling results.\n")
+
         # Save model state dict
         torch.save(model.state_dict(), os.path.join(save_dir, "model_weights.pt"))
         # print(f"Model weights saved to {save_dir}/model_weights.pt")
@@ -284,7 +485,9 @@ def main(params):
             f.write(f"  Final Training Loss: {train_losses[-1]:.6f}\n")
             f.write(f"  Final Validation Loss: {val_losses[-1]:.6f}\n")
             f.write(f"  Best Validation Loss: {min(val_losses):.6f} (Epoch {val_losses.index(min(val_losses))})\n")
-            
+            f.write(f"  Total Training Time: {total_training_time:.2f} seconds ({total_training_time/60:.2f} minutes, {total_training_time/3600:.2f} hours)\n")
+            f.write(f"  Average Time per Epoch: {avg_epoch_time:.2f} seconds\n")
+
             if training_config.get('early_stopping') and patience_counter > training_config.get('patience'):
                 f.write(f"  Training stopped early due to no improvement for {training_config.get('patience')} epochs\n")
                 

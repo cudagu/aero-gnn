@@ -12,6 +12,7 @@ import argparse
 from typing import Dict, List, Tuple, Optional, Union
 from tqdm import tqdm
 import datetime
+from sklearn.metrics import r2_score
 
 # Configure matplotlib for better plots
 plt.rcParams.update({
@@ -53,6 +54,17 @@ def load_model_and_data(training_output_dir: str):
         from models.bsms_dataset_wrapper import prepare_bsms_data, BSMSDataLoader
         num_levels = params['model'].get('num_levels', 3)
         test_set = prepare_bsms_data(test_set, num_levels=num_levels)
+    elif model_name == 'graphspectral_transolver':
+        from models.graphSpectralTransolver import add_spectral_features_to_dataset
+        print("\n=== Precomputing Spectral Features for Inference ===")
+        spectral_dim = params['model'].get('spectral_dim', 8)
+        laplacian_norm = params['model'].get('laplacian_norm', 'sym')
+        test_set = add_spectral_features_to_dataset(test_set, spectral_dim, laplacian_norm, verbose=True)
+    elif model_name == 'graphdistance_transolver':
+        from models.graphDistanceTransolver import add_graph_distances_to_dataset
+        print("\n=== Precomputing Graph Distances for Inference ===")
+        max_hops = params['model'].get('max_hops', 5)
+        test_set = add_graph_distances_to_dataset(test_set, max_hops, verbose=True)
 
     # Load model architecture and weights
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -144,6 +156,32 @@ class AeroInference:
                 elif model_class in ['MLPNet']:
                     pred_scaled = self.model(data.x)
 
+                elif model_class == 'GraphSpectralTransolver':
+                    # GraphSpectralTransolver uses batch tensor and requires spectral_features
+                    batch = torch.zeros(data.x.size(0), dtype=torch.long, device=self.device)
+                    spectral_features = data.spectral_features if hasattr(data, 'spectral_features') else None
+                    pred_scaled = self.model(data.x, data.edge_attr, data.edge_index, batch, spectral_features)
+
+                elif model_class == 'GraphDistanceTransolver':
+                    # GraphDistanceTransolver uses batch tensor and requires graph_distances
+                    batch = torch.zeros(data.x.size(0), dtype=torch.long, device=self.device)
+                    graph_distances = data.graph_distances if hasattr(data, 'graph_distances') else None
+                    pred_scaled = self.model(data.x, data.edge_attr, data.edge_index, batch, graph_distances)
+
+                elif model_class == 'TransolverAero':
+                    # Transolver uses batch tensor for PyG batching
+                    batch = torch.zeros(data.x.size(0), dtype=torch.long, device=self.device)
+                    pred_scaled = self.model(data.x, data.edge_attr, data.edge_index, batch)
+                    
+                elif model_class == 'MGNTransolver':
+                    # Transolver uses batch tensor for PyG batching
+                    batch = torch.zeros(data.x.size(0), dtype=torch.long, device=self.device)
+                    pred_scaled = self.model(data.x, data.edge_attr, data.edge_index, batch)
+
+                elif model_class == 'GCN':
+                    # GCN only needs node features and edge_index
+                    pred_scaled = self.model(data.x, data.edge_index)
+
                 else:
                     pred_scaled = self.model(data.x, data.edge_attr, data.edge_index)
         else:
@@ -165,6 +203,27 @@ class AeroInference:
 
             elif model_class in ['MLPNet']:
                 pred_scaled = self.model(data.x)
+
+            elif model_class == 'GraphSpectralTransolver':
+                # GraphSpectralTransolver uses batch tensor and requires spectral_features
+                batch = torch.zeros(data.x.size(0), dtype=torch.long, device=self.device)
+                spectral_features = data.spectral_features if hasattr(data, 'spectral_features') else None
+                pred_scaled = self.model(data.x, data.edge_attr, data.edge_index, batch, spectral_features)
+
+            elif model_class == 'GraphDistanceTransolver':
+                # GraphDistanceTransolver uses batch tensor and requires graph_distances
+                batch = torch.zeros(data.x.size(0), dtype=torch.long, device=self.device)
+                graph_distances = data.graph_distances if hasattr(data, 'graph_distances') else None
+                pred_scaled = self.model(data.x, data.edge_attr, data.edge_index, batch, graph_distances)
+
+            elif model_class == 'TransolverAero':
+                # Transolver uses batch tensor for PyG batching
+                batch = torch.zeros(data.x.size(0), dtype=torch.long, device=self.device)
+                pred_scaled = self.model(data.x, data.edge_attr, data.edge_index, batch)
+
+            elif model_class == 'GCN':
+                # GCN only needs node features and edge_index
+                pred_scaled = self.model(data.x, data.edge_index)
 
             else:
                 pred_scaled = self.model(data.x, data.edge_attr, data.edge_index)
@@ -266,7 +325,7 @@ class AeroInference:
         plt.savefig(f'{base_path}_predictions.png', dpi=300, bbox_inches='tight')
         plt.close()
     
-    def export_3d_vtu_with_predictions(self, data, pred: torch.Tensor, 
+    def export_ahmedBody_vtu(self, data, pred: torch.Tensor, 
                                      original_file_path: str, output_path: str):
         """Export 3D VTU/VTP file with predictions included."""
         try:
@@ -294,19 +353,13 @@ class AeroInference:
             target_features = self.params.get('dataset', {}).get('output_features', [f'feature_{i}' for i in range(pred.shape[1])])
             
             # Add predictions to mesh
-            for i, feature_name in enumerate(target_features):
-                if hasattr(mesh, 'point_data'):
-                    mesh.point_data[f'predicted_{feature_name}'] = pred[:, i].numpy()
-                    
-                    # Add ground truth if available
-                    if hasattr(data, 'y') and data.y is not None:
-                        target = (data.y * self.device_norm_stats['target_std'] + 
-                                 self.device_norm_stats['target_mean']).cpu()
-                        mesh.point_data[f'true_{feature_name}'] = target[:, i].numpy()
-                        
-                        # Add error
-                        error = pred[:, i].numpy() - target[:, i].numpy()
-                        mesh.point_data[f'error_{feature_name}'] = error
+            mesh.point_data['p_pred'] = pred[:, 0].numpy()
+            p_error = mesh.point_data['p'] - pred[:, 0].numpy()
+            mesh.point_data['p_error'] = p_error
+            mesh.point_data['wallShearStress_pred'] = pred[:, 1:4].numpy()
+            shear_error = mesh.point_data['wallShearStress'] - pred[:, 1:4].numpy()
+            mesh.point_data['wallShearStress_error'] = shear_error
+            
             
             # Save mesh
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -319,7 +372,144 @@ class AeroInference:
         except Exception as e:
             print(f"Warning: Could not export VTU for {original_file_path}: {e}")
             return False
-    
+
+    def pv_plot_ahmedBody(self, original_file_path: str, output_path: str):
+        """Create PyVista plot of Ahmed body with predictions."""
+        try:
+            # Load original mesh
+            mesh = pv.read(original_file_path)
+            camera_position = [(-2.0, 2.0, 0.5), (-0.5, 0.12225, 0.15775), (0, 0, 1)]
+            
+            
+            if mesh is None:
+                raise ValueError(f"Could not load mesh from {original_file_path}")
+            
+            # Verify mesh has point_data attribute
+            if not hasattr(mesh, 'point_data'):
+                raise ValueError("Mesh does not have point_data attribute")
+            
+            # p_min = mesh.point_data['p_pred'].min()
+            # p_max = mesh.point_data['p_pred'].max()    
+            # s_min = mesh.point_data['wallShearStress_pred'].min()
+            # s_max = mesh.point_data['wallShearStress_pred'].max()
+            
+            plotter = pv.Plotter(shape=(2, 3), window_size=(1200, 1200))  
+            
+            plotter.subplot(0, 0)
+            # plotter.add_mesh(mesh, scalars="p_pred", clim=[p_min, p_max])  
+            # plotter.add_mesh(mesh, scalars="p_pred", clim=[mesh.point_data['p_pred'].min(), mesh.point_data['p_pred'].max()])
+            plotter.add_mesh(mesh, scalars="p_pred")
+            plotter.add_text("Prediction: Pressure", position='upper_left', font_size=12)
+            plotter.camera_position = camera_position
+            
+            plotter.subplot(0, 1)
+            # plotter.add_mesh(mesh, scalars="p", clim=[mesh.point_data['p'].min(), mesh.point_data['p'].max()])
+            plotter.add_mesh(mesh, scalars="p")
+            plotter.add_text("Ground Truth: Pressure", position='upper_left', font_size=12) 
+            plotter.camera_position = camera_position
+            
+            plotter.subplot(0, 2)
+            # plotter.add_mesh(mesh, scalars="p_error", clim=[-abs(mesh.point_data['p_pred'].max() - mesh.point_data['p_pred'].min())/10, abs(mesh.point_data['p_pred'].max() - mesh.point_data['p_pred'].min())/10], cmap='bwr')
+            plotter.add_mesh(mesh, scalars="p_error")
+            plotter.add_text("Error: Pressure", position='upper_left', font_size=12)
+            plotter.camera_position = camera_position
+            
+            plotter.subplot(1, 0)
+            plotter.add_mesh(mesh, scalars="wallShearStress_pred", clim=[mesh.point_data['wallShearStress_pred'].min(), mesh.point_data['wallShearStress_pred'].max()])
+            plotter.add_text("Prediction: Wall Shear Stress", position='upper_left', font_size=12)
+            plotter.camera_position = camera_position
+            
+            plotter.subplot(1, 1)
+            plotter.add_mesh(mesh, scalars="wallShearStress", clim=[mesh.point_data['wallShearStress'].min(), mesh.point_data['wallShearStress'].max()])
+            plotter.add_text("Ground Truth: Wall Shear Stress", position='upper_left', font_size=12)
+            plotter.camera_position = camera_position
+            
+            plotter.subplot(1, 2)
+            plotter.add_mesh(mesh, scalars="wallShearStress_error", clim=[-abs(mesh.point_data['wallShearStress_pred'].max() - mesh.point_data['wallShearStress_pred'].min())/10, abs(mesh.point_data['wallShearStress_pred'].max() - mesh.point_data['wallShearStress_pred'].min())/10], cmap='bwr')
+            plotter.add_text("Error: Wall Shear Stress", position='upper_left', font_size=12)
+            plotter.camera_position = camera_position
+            
+            plotter.link_views()
+            plotter.show()
+            
+        except Exception as e:
+            print(f"Warning: Could not create PyVista plot for {original_file_path}: {e}")
+            return False
+            
+
+    def plot_aero_coefficients_r2(self, aero_coeffs: Dict, output_dir: str, dataset_name: str):
+        """Create R² scatter plots with fit lines for aerodynamic coefficients."""
+
+        # Determine which coefficients to plot based on dataset
+        if dataset_name == "airfoil_2d":
+            coeff_names = ['CA', 'CN', 'Cm']
+        elif dataset_name == "ahmed_body":
+            coeff_names = ['CA']
+        else:
+            print("No aerodynamic coefficients to plot for this dataset type.")
+            return
+
+        # Filter out empty coefficient lists
+        coeffs_to_plot = []
+        for coeff in coeff_names:
+            if len(aero_coeffs[f'{coeff}_pred']) > 0:
+                coeffs_to_plot.append(coeff)
+
+        if not coeffs_to_plot:
+            print("No aerodynamic coefficients available to plot.")
+            return
+
+        n_coeffs = len(coeffs_to_plot)
+        fig, axes = plt.subplots(1, n_coeffs, figsize=(6 * n_coeffs, 5))
+
+        # Handle single coefficient case (axes won't be an array)
+        if n_coeffs == 1:
+            axes = [axes]
+
+        for idx, coeff_name in enumerate(coeffs_to_plot):
+            pred_values = np.array(aero_coeffs[f'{coeff_name}_pred'])
+            true_values = np.array(aero_coeffs[f'{coeff_name}_true'])
+
+            # Compute R² score
+            r2 = r2_score(true_values, pred_values)
+
+            # Compute linear fit
+            # coeffs = np.polyfit(true_values, pred_values, 1)
+            # poly = np.poly1d(coeffs)
+
+            # Create fit line points
+            min_val = min(true_values.min(), pred_values.min())
+            max_val = max(true_values.max(), pred_values.max())
+            # fit_line = np.linspace(min_val, max_val, 100)
+
+            # Plot
+            ax = axes[idx]
+            ax.scatter(true_values, pred_values, alpha=0.6, s=50, edgecolors='k', linewidths=0.5)
+            # ax.plot(fit_line, poly(fit_line), 'r--', linewidth=2, label=f'Fit: y={coeffs[0]:.3f}x+{coeffs[1]:.3f}')
+            ax.plot([min_val, max_val], [min_val, max_val], 'k-', linewidth=1, alpha=0.5)
+
+            ax.set_xlabel(f'True {coeff_name}', fontsize=14)
+            ax.set_ylabel(f'Predicted {coeff_name}', fontsize=14)
+            ax.set_title(f'{coeff_name}: R² = {r2:.4f}', fontsize=16, fontweight='bold')
+            ax.legend(fontsize=11)
+            ax.grid(True, alpha=0.3)
+            ax.set_aspect('equal', adjustable='box')
+
+        plt.tight_layout()
+
+        # Save plot
+        plot_path = os.path.join(output_dir, 'aerodynamic_coefficients_r2.png')
+        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        plt.close()
+
+        print(f"\nAerodynamic Coefficient R² Analysis:")
+        for coeff_name in coeffs_to_plot:
+            pred_values = np.array(aero_coeffs[f'{coeff_name}_pred'])
+            true_values = np.array(aero_coeffs[f'{coeff_name}_true'])
+            r2 = r2_score(true_values, pred_values)
+            print(f"  {coeff_name}: R² = {r2:.4f}")
+        print(f"  Plot saved to: {plot_path}")
+
     def run_inference(self, test_dataset, output_dir: str, original_data_dir: Optional[str] = None):
         """Run comprehensive inference on test dataset."""
         print(f"Running inference on {len(test_dataset)} test cases...")
@@ -345,7 +535,14 @@ class AeroInference:
         all_target_phys = []
         all_pred_norm = []
         all_target_norm = []
-        
+
+        # Collect aerodynamic coefficients for R² analysis
+        aero_coeffs = {
+            'CA_pred': [], 'CA_true': [],
+            'CN_pred': [], 'CN_true': [],
+            'Cm_pred': [], 'Cm_true': []
+        }
+
         for i, data in enumerate(test_dataset):
             pred_phys, target_phys, pred_norm, target_norm = self.predict_single(data)
             
@@ -388,11 +585,19 @@ class AeroInference:
                             reference_length=1.0,
                             dynamic_pressure=0.5 * 1.4 * 101325 * mach * mach
                             )
-                
+
+                # Store coefficients for R² analysis
+                aero_coeffs['CA_pred'].append(pred_coeffs['CA'])
+                aero_coeffs['CA_true'].append(true_coeffs['CA'])
+                aero_coeffs['CN_pred'].append(pred_coeffs['CN'])
+                aero_coeffs['CN_true'].append(true_coeffs['CN'])
+                aero_coeffs['Cm_pred'].append(pred_coeffs['Cm'])
+                aero_coeffs['Cm_true'].append(true_coeffs['Cm'])
+
                 coeff_str = (f" | CA:{pred_coeffs['CA']:7.4f} ({true_coeffs['CA']:7.4f}) "
                             f"| CN:{pred_coeffs['CN']:7.4f} ({true_coeffs['CN']:7.4f}) "
                             f"| Cm:{pred_coeffs['Cm']:7.4f} ({true_coeffs['Cm']:7.4f})")
-                
+
                 print(f"Error in case{i:03d}: {case_rrmse:7.4f}%{coeff_str}")
 
 
@@ -427,10 +632,12 @@ class AeroInference:
                     dynamic_pressure= 0.5 * 1.225 * velocity * velocity
                 )
 
-                coeff_str = (f" | CA:{coeffs['CA_pred']:7.4f} ({coeffs['CA_true']:7.4f}) "
-                            f"| CN:{coeffs['CN_pred']:7.4f} ({coeffs['CN_true']:7.4f}) "
-                            f"| CY:{coeffs['CY_pred']:7.4f} ({coeffs['CY_true']:7.4f})")
-                
+                # Store coefficients for R² analysis
+                aero_coeffs['CA_pred'].append(coeffs['CA_pred'])
+                aero_coeffs['CA_true'].append(coeffs['CA_true'])
+
+                coeff_str = (f" | CA:{coeffs['CA_pred']:7.4f} ({coeffs['CA_true']:7.4f})")
+
                 print(f"Error in case{i:03d}: {case_rrmse:7.4f}%{coeff_str}")
                     
             
@@ -488,11 +695,16 @@ class AeroInference:
             
             elif dataset_name == "ahmed_body":
                 # 3D VTU export
-                
+
                 original_file = os.path.join(data_dir, data.split, data.case_no+'.vtp')
                 output_file = os.path.join(vtu_dir, f"{data.case_no}_predictions.vtp")
-                self.export_3d_vtu_with_predictions(data, pred_phys, original_file, output_file)
-        
+                self.export_ahmedBody_vtu(data, pred_phys, original_file, output_file)
+                png_file = os.path.join(vtu_dir, f"{data.case_no}_predictions.png")
+                self.pv_plot_ahmedBody(output_file, png_file)
+
+        # Plot R² scatter plots for aerodynamic coefficients
+        self.plot_aero_coefficients_r2(aero_coeffs, inference_dir, dataset_name)
+
         # Compute test-set mean feature-wise errors
         pred_phys_all = torch.cat(all_pred_phys, dim=0)
         target_phys_all = torch.cat(all_target_phys, dim=0)
@@ -569,6 +781,11 @@ class AeroInference:
                     # Write line with fixed-width formatting
                     line = f"case_{case_info['case_id']:03d} | rrmse:{case_info['rrmse_percent']:6.2f} | nmae:{case_nmae:8.6f} | nmse:{case_nmse:8.6f} | mae:{case_mae:7.2f} | mse:{case_mse:12.2f}{case_coeff_str} | {str(case_no):5s}"
                     f.write(line + "\n")
+                    
+        #save target specific errors as json
+        errors_json_path = os.path.join(inference_dir, "errors_target.json")
+        with open(errors_json_path, 'w') as f:
+            json.dump(final_errors, f, indent=4)
         
         print(f"Inference complete! Results saved to: {inference_dir}")
         return inference_dir
