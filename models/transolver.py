@@ -85,6 +85,7 @@ class PhysicsAttentionEidetic(nn.Module):
         # Input projections
         self.in_project_x = nn.Linear(dim, inner_dim)
         self.in_project_slice = nn.Linear(dim_head, slice_num)
+        
 
         # Initialize slice projection with orthogonal weights
         torch.nn.init.orthogonal_(self.in_project_slice.weight)

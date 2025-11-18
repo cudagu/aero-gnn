@@ -41,7 +41,7 @@ class AeroDataset(Dataset):
         else:
             raise ValueError(f"Unknown dataset type: {dataset_type}")
 
-        # plot_adjacency_matrix(self.data_list[0], title=f"{dataset_type} Sample Graph", save_path=f"{dataset_type}_sample_graph")
+        plot_adjacency_matrix(self.data_list[0], title=f"{dataset_type} Sample Graph", save_path=f"{dataset_type}_sample_graph")
 
         if params["training"].get("reordering") == "rcm":
             print("Reordering graphs using RCM...")

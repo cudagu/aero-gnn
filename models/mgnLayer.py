@@ -183,7 +183,18 @@ class NodeBlock(nn.Module):
         with profiler.profile("node_mlp_computation"):
             return self.mlp(node_input)
     
-    
+@torch.jit.script
+def fused_edge_update(edge_attr: torch.Tensor, 
+                     edge_update: torch.Tensor) -> torch.Tensor:
+    """Fused residual addition for edges"""
+    return edge_attr + edge_update
+
+@torch.jit.script  
+def fused_node_update(node_attr: torch.Tensor,
+                     node_update: torch.Tensor) -> torch.Tensor:
+    """Fused residual addition for nodes"""
+    return node_attr + node_update
+   
 class MeshGraphNetLayer(nn.Module):
     """Single layer of MeshGraphNet with edge and node processing blocks."""
     
@@ -221,7 +232,7 @@ class MeshGraphNetLayer(nn.Module):
             edge_attr_new = self.edge_block(edge_attr, node_attr, edge_index)
 
         with profiler.profile("edge_residual"):
-            edge_attr = edge_attr + edge_attr_new
+            edge_attr = fused_edge_update(edge_attr, edge_attr_new)
 
         # Process nodes
         with profiler.profile("total_node_block"):
@@ -229,6 +240,6 @@ class MeshGraphNetLayer(nn.Module):
 
         # Residual connections
         with profiler.profile("node_residual"):
-            node_attr = node_attr + node_attr_new
+            node_attr = fused_node_update(node_attr, node_attr_new)
 
         return node_attr, edge_attr

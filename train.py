@@ -15,6 +15,9 @@ from pathlib import Path
 from tqdm import tqdm
 import random
 from collections import defaultdict
+from torch.profiler import profile, ProfilerActivity, record_function
+from combined_optimization_pipeline import OptimizationPipeline
+from svd_logger import log_singular_values, save_svd_plots
 
 # Set matplotlib to non-interactive backend to avoid tkinter issues with DataLoader multiprocessing
 # import matplotlib
@@ -142,6 +145,16 @@ def main(params):
     model = model.to(device)
     print(f"Model moved to {device}")
     print(f"Total parameters: {sum(p.numel() for p in model.parameters()):,}")
+    
+    from utils import find_linear_layers
+    find_linear_layers(model)
+    
+    # pipeline = OptimizationPipeline(model, device='cuda')
+    
+    # prune_analysis, low_rank_analysis = pipeline.stage1_analysis(save_report=True)
+    # pruned_model = pipeline.stage2_pruning(sparsity=0.3, finetune_epochs=0)
+    # model = pipeline.stage3_lowrank(rank_ratio=0.25, finetune_epochs=0)
+    # print(f"Total parameters after low-rank approximation: {sum(p.numel() for p in model.parameters()):,}")
 
     # Training configuration
     training_config = params['training']
@@ -156,6 +169,18 @@ def main(params):
     # Training loop
 
     if training_config.get('epochs', 0) > 0:
+        
+        # Create output directory with date folder structure
+        now = datetime.datetime.now()
+        date_folder = now.strftime("%d-%m-%Y")  # e.g., "22-09-2024"
+        time_stamp = now.strftime("%H-%M")      # e.g., "14-30"
+        
+        model_info = f"{model_name}-{params['dataset']['name']}"
+        
+        # Create: training_runs/22-09-2024/14-30-model-dataset
+        run_folder = f"{time_stamp}-{model_info}"
+        save_dir = os.path.join("training_runs", date_folder, run_folder)
+        os.makedirs(save_dir, exist_ok=True)
 
         train_losses = []
         val_losses = []
@@ -169,53 +194,39 @@ def main(params):
         training_start_time = time.time()
 
         # Profiling setup
-        profiler = None
-        enable_profiling = training_config.get('enable_profiling', False)
+        profiling = training_config.get('profiling', False)
 
-        if enable_profiling:
-            from torch.profiler import profile, record_function, ProfilerActivity, schedule
-
-            # Configure profiler schedule
-            profile_wait = training_config.get('profile_wait', 1)
-            profile_warmup = training_config.get('profile_warmup', 1)
-            profile_active = training_config.get('profile_active', 3)
-            profile_repeat = training_config.get('profile_repeat', 1)
-
-            print(f"\n{'='*60}")
-            print(f"PROFILING ENABLED")
-            print(f"{'='*60}")
-            print(f"Wait steps: {profile_wait}")
-            print(f"Warmup steps: {profile_warmup}")
-            print(f"Active steps: {profile_active}")
-            print(f"Repeat: {profile_repeat}")
-            print(f"{'='*60}\n")
-
-            # Create profiler
-            profiler = profile(
-                activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA] if torch.cuda.is_available() else [ProfilerActivity.CPU],
-                schedule=schedule(
-                    wait=profile_wait,
-                    warmup=profile_warmup,
-                    active=profile_active,
-                    repeat=profile_repeat
-                ),
-                on_trace_ready=lambda prof: None,  # We'll save manually later
-                record_shapes=True,
-                profile_memory=True,
-                with_stack=True
-            )
-            profiler.__enter__()  # Start profiler context
-
+        if profiling:
+            with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA], 
+                         profile_memory=True, 
+                         record_shapes=True,
+                         with_stack=True) as prof:
+                with record_function("model_pass"):
+                    train_loss = train(model, train_loader, optimizer, loss_fn, device, use_amp=use_amp, amp_dtype=amp_dtype, profiler=None)
+                    
+            print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=20))
+            # print(prof.key_averages().table(sort_by="self_cuda_time_total", row_limit=20))
+            # Save profiling results
+            prof.export_chrome_trace(os.path.join(save_dir, "training_profiling_trace.json"))
+            print(f"Profiling trace saved to {save_dir}/training_profiling_trace.json")
+            #exit after profiling
+            return
+                
+            
         for epoch in iterator:
 
-            train_loss = train(model, train_loader, optimizer, loss_fn, device, use_amp=use_amp, amp_dtype=amp_dtype, profiler=profiler)
-            val_loss = evaluate(model, val_loader, loss_fn, device, use_amp=use_amp, amp_dtype=amp_dtype, profiler=profiler)
+            train_loss = train(model, train_loader, optimizer, loss_fn, device, use_amp=use_amp, amp_dtype=amp_dtype, profiler=None)
+            val_loss = evaluate(model, val_loader, loss_fn, device, use_amp=use_amp, amp_dtype=amp_dtype, profiler=None)
             if training_config.get('scheduler') == 'ReduceLROnPlateau':
                 scheduler.step(val_loss)
             else:
                 scheduler.step()
             current_lr = optimizer.param_groups[0]['lr']
             iterator.set_postfix(Loss=train_loss, Val_Loss=val_loss, lr=current_lr)
+            
+            if epoch % 5 == 0:
+                print(f"Epoch {epoch}: Logging singular values...")
+                log_singular_values(model, epoch)
             
             # Early stopping
             if training_config.get('early_stopping'):
@@ -232,10 +243,6 @@ def main(params):
             val_losses.append(val_loss)
             lr_list.append(current_lr)
 
-        # Close profiler and save results
-        if profiler is not None:
-            profiler.__exit__(None, None, None)  # Exit profiler context
-            print("\nProfiling complete. Generating reports...")
 
         # Calculate total training time
         training_end_time = time.time()
@@ -246,126 +253,9 @@ def main(params):
         print(f"Total training time: {total_training_time:.2f} seconds ({total_training_time/60:.2f} minutes)")
         print(f"Average time per epoch: {avg_epoch_time:.2f} seconds")
 
-        # Create output directory with date folder structure
-        now = datetime.datetime.now()
-        date_folder = now.strftime("%d-%m-%Y")  # e.g., "22-09-2024"
-        time_stamp = now.strftime("%H-%M")      # e.g., "14-30"
         
-        model_info = f"{model_name}-{params['dataset']['name']}"
+
         
-        # Create: training_runs/22-09-2024/14-30-model-dataset
-        run_folder = f"{time_stamp}-{model_info}"
-        save_dir = os.path.join("training_runs", date_folder, run_folder)
-        os.makedirs(save_dir, exist_ok=True)
-
-        # Save profiling results if profiler was used
-        if profiler is not None:
-            profile_dir = os.path.join(save_dir, "profiling")
-            os.makedirs(profile_dir, exist_ok=True)
-
-            print(f"\nSaving profiling results to {profile_dir}...")
-
-            # Save detailed trace (Chrome trace format - can be viewed in chrome://tracing)
-            profiler.export_chrome_trace(os.path.join(profile_dir, "trace.json"))
-            print(f"  - Chrome trace saved to {profile_dir}/trace.json")
-            print(f"    View in Chrome: chrome://tracing or ui.perfetto.dev")
-
-            # Check if CUDA metrics are available (do this once for all reports)
-            key_avg = profiler.key_averages()
-            has_cuda_metrics = torch.cuda.is_available() and len(key_avg) > 0 and hasattr(key_avg[0], 'cuda_time_total')
-
-            # Generate and save table reports
-            with open(os.path.join(profile_dir, "profiling_report.txt"), "w") as f:
-                f.write("="*100 + "\n")
-                f.write("PYTORCH PROFILING REPORT\n")
-                f.write("="*100 + "\n\n")
-
-                # CPU time report
-                f.write("TOP OPERATIONS BY CPU TIME\n")
-                f.write("-"*100 + "\n")
-                f.write(profiler.key_averages().table(sort_by="cpu_time_total", row_limit=30))
-                f.write("\n\n")
-
-                # CUDA time report (if available)
-                if has_cuda_metrics:
-                    f.write("TOP OPERATIONS BY CUDA TIME\n")
-                    f.write("-"*100 + "\n")
-                    try:
-                        f.write(profiler.key_averages().table(sort_by="cuda_time_total", row_limit=30))
-                    except (AttributeError, KeyError):
-                        f.write("CUDA time data not available\n")
-                    f.write("\n\n")
-
-                    # Memory report
-                    f.write("TOP OPERATIONS BY CUDA MEMORY USAGE\n")
-                    f.write("-"*100 + "\n")
-                    try:
-                        f.write(profiler.key_averages().table(sort_by="cuda_memory_usage", row_limit=30))
-                    except (AttributeError, KeyError):
-                        f.write("CUDA memory data not available\n")
-                    f.write("\n\n")
-
-                # Self time (time spent in operation itself, excluding callees)
-                f.write("TOP OPERATIONS BY SELF CPU TIME\n")
-                f.write("-"*100 + "\n")
-                f.write(profiler.key_averages().table(sort_by="self_cpu_time_total", row_limit=30))
-                f.write("\n\n")
-
-                if has_cuda_metrics:
-                    f.write("TOP OPERATIONS BY SELF CUDA TIME\n")
-                    f.write("-"*100 + "\n")
-                    try:
-                        f.write(profiler.key_averages().table(sort_by="self_cuda_time_total", row_limit=30))
-                    except (AttributeError, KeyError):
-                        f.write("CUDA time data not available\n")
-                    f.write("\n\n")
-
-                # Grouped by input shapes
-                f.write("OPERATIONS GROUPED BY INPUT SHAPES\n")
-                f.write("-"*100 + "\n")
-                f.write(profiler.key_averages(group_by_input_shape=True).table(sort_by="cpu_time_total", row_limit=30))
-                f.write("\n\n")
-
-            print(f"  - Detailed text report saved to {profile_dir}/profiling_report.txt")
-
-            # Create a concise summary
-            with open(os.path.join(profile_dir, "profiling_summary.txt"), "w") as f:
-                f.write("PROFILING SUMMARY\n")
-                f.write("="*60 + "\n\n")
-
-                # Calculate totals
-                total_cpu_time = sum([item.cpu_time_total for item in key_avg])
-
-                f.write(f"Total CPU Time: {total_cpu_time/1e6:.2f} ms\n")
-
-                if has_cuda_metrics:
-                    total_cuda_time = sum([getattr(item, 'cuda_time_total', 0) for item in key_avg])
-                    total_cuda_memory = sum([getattr(item, 'cuda_memory_usage', 0) for item in key_avg])
-
-                    f.write(f"Total CUDA Time: {total_cuda_time/1e6:.2f} ms\n")
-                    f.write(f"Peak CUDA Memory: {total_cuda_memory/1e6:.2f} MB\n")
-
-                f.write("\nTop 10 Bottlenecks (by CPU time):\n")
-                f.write("-"*60 + "\n")
-                sorted_items = sorted(key_avg, key=lambda x: x.cpu_time_total, reverse=True)[:10]
-                for i, item in enumerate(sorted_items, 1):
-                    pct = 100.0 * item.cpu_time_total / total_cpu_time if total_cpu_time > 0 else 0
-                    f.write(f"{i}. {item.key:50s} {item.cpu_time_total/1e6:8.2f} ms ({pct:5.1f}%)\n")
-
-                # CUDA bottlenecks (requires total_cuda_time from above CUDA check)
-                if has_cuda_metrics:
-                    f.write("\nTop 10 Bottlenecks (by CUDA time):\n")
-                    f.write("-"*60 + "\n")
-                    sorted_items = sorted(key_avg, key=lambda x: getattr(x, 'cuda_time_total', 0), reverse=True)[:10]
-                    total_cuda_time_local = sum([getattr(item, 'cuda_time_total', 0) for item in key_avg])
-                    for i, item in enumerate(sorted_items, 1):
-                        cuda_time = getattr(item, 'cuda_time_total', 0)
-                        pct = 100.0 * cuda_time / total_cuda_time_local if total_cuda_time_local > 0 else 0
-                        f.write(f"{i}. {item.key:50s} {cuda_time/1e6:8.2f} ms ({pct:5.1f}%)\n")
-
-            print(f"  - Summary saved to {profile_dir}/profiling_summary.txt")
-            print(f"\nProfiler reports generated successfully!")
-            print(f"Check {profile_dir}/ for detailed profiling results.\n")
 
         # Save model state dict
         torch.save(model.state_dict(), os.path.join(save_dir, "model_weights.pt"))
@@ -374,6 +264,9 @@ def main(params):
         # Save normalization statistics
         torch.save(norm_stats, os.path.join(save_dir, "normalization_stats.pt"))
         # print(f"Normalization stats saved to {save_dir}/normalization_stats.pt")
+        
+        #save svd plots
+        save_svd_plots(os.path.join(save_dir, "svd_analysis"))
         
         # Save training configuration and parameters
         import json

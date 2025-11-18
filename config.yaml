@@ -201,18 +201,18 @@ training:
     shuffle: True
     random_seed: 42
     precision: "bfloat16"  # options: "single", "double", "bfloat16"
-    device: "cuda:0"
+    device: "cpu"
     loss_function: "MSELoss"
     early_stopping: True
     patience: 200
     reordering: "None"  # options: "None", "rcm", "GPS"
     # Profiling settings
-    enable_profiling: False  # Set to True to enable PyTorch profiler
+    profiling: False  # Set to True to enable PyTorch profiler
     profile_epochs: 1  # Number of epochs to profile (profiles early epochs)
-    profile_wait: 1  # Warm-up epochs before profiling
+    profile_wait: 3  # Warm-up epochs before profiling
     profile_warmup: 3  # Number of warmup steps in profiling
     profile_active: 3  # Number of active profiling steps per epoch
-    profile_repeat: 1  # Number of cycles to repeat
+    profile_repeat: 3  # Number of cycles to repeat
 
 experiments:
 
@@ -366,7 +366,7 @@ experiments:
     dataset: ahmed_body
     model: bsms_mgn
     training: default
-    data_dir: /home/hakan/MEGA/GNN/data/ahmedBody/raw
+    data_dir: /home/idb30211
     batch_size: 1
     epochs: 500
     train_num_samples: 408
@@ -380,7 +380,7 @@ experiments:
     dataset: ahmed_body
     model: poolMGN
     training: default
-    data_dir: /home/hakan/MEGA/GNN/data/ahmedBody/raw
+    data_dir: /home/idb30211
     batch_size: 2
     epochs: 500
     train_num_samples: 50
@@ -393,13 +393,15 @@ experiments:
     model: meshgraphnet
     training: default
     data_dir: /home/hakan/MEGA/GNN/data/ahmedBody/raw
-    batch_size: 2
-    epochs: 400
+    batch_size: 1
+    epochs: 20
     train_num_samples: 50
     val_num_samples: 5
     test_num_samples: 5
     hidden_dim: 32
-    enable_profiling: False
+    processor_size: 10
+    do_concat_trick: False
+    profiling: False
   
   ahmedBody_fourier_mgn:
     dataset: ahmed_body
@@ -418,7 +420,7 @@ experiments:
     dataset: ahmed_body
     model: trial1
     training: default
-    data_dir: /home/hakan/MEGA/GNN/data/ahmedBody/raw
+    data_dir: /home/idb30211
     batch_size: 2
     epochs: 500
     train_num_samples: 100
@@ -430,7 +432,7 @@ experiments:
     dataset: ahmed_body
     model: transolver
     training: default
-    data_dir: /home/hakan/MEGA/GNN/data/ahmedBody/raw
+    data_dir: /home/idb30211
     batch_size: 2
     epochs: 500
     train_num_samples: 50
@@ -440,6 +442,7 @@ experiments:
     n_layers: 6
     slice_num: 64  # More eidetic states for larger 3D mesh
     learning_rate: 0.0002
+    profiling: True
 
 
   ahmedBody_mgntransolver:
@@ -456,13 +459,14 @@ experiments:
     n_head: 8
     slice_num: 64  # More eidetic states for larger 3D mesh
     learning_rate: 0.0002
+    profiling: True
   
 
   ahmedBody_gcn:
     dataset: ahmed_body
     model: gcn
     training: default
-    data_dir: /home/hakan/MEGA/GNN/data/ahmedBody/raw
+    data_dir: /home/idb30211
     batch_size: 50
 
   
@@ -471,7 +475,7 @@ experiments:
     dataset: ahmed_body
     model: graphspectral_transolver
     training: default
-    data_dir: /home/hakan/MEGA/GNN/data/ahmedBody/raw
+    data_dir: /home/idb30211
     batch_size: 2
     epochs: 500
     train_num_samples: 50
@@ -490,7 +494,7 @@ experiments:
     dataset: ahmed_body
     model: graphdistance_transolver
     training: default
-    data_dir: /home/hakan/MEGA/GNN/data/ahmedBody/raw
+    data_dir: /home/idb30211
     batch_size: 2
     epochs: 500
     train_num_samples: 50

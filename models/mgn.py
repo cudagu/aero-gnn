@@ -41,7 +41,6 @@ class MeshGraphNet(nn.Module):
         
         
         # Encoder: project input features to hidden dimension
-        # NOTE: use_layer_norm disabled for 20-25% speedup (profiling showed 23.5% GPU time in LayerNorm)
         self.node_encoder = MLP(input_node_dim,
                                          hidden_dim = hidden_dim_node_encoder,
                                          output_dim = hidden_dim_processor,

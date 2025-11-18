@@ -349,8 +349,6 @@ class AeroInference:
             if not hasattr(mesh, 'point_data'):
                 raise ValueError("Mesh does not have point_data attribute")
             
-            # Get target features from dataset config or use fallback
-            target_features = self.params.get('dataset', {}).get('output_features', [f'feature_{i}' for i in range(pred.shape[1])])
             
             # Add predictions to mesh
             mesh.point_data['p_pred'] = pred[:, 0].numpy()
@@ -378,7 +376,7 @@ class AeroInference:
         try:
             # Load original mesh
             mesh = pv.read(original_file_path)
-            camera_position = [(-2.0, 2.0, 0.5), (-0.5, 0.12225, 0.15775), (0, 0, 1)]
+            camera_position = [(-2.50, 0.9, 0.65), (-0.6, -0.02, 0.1215), (0.2, -0.12, 0.9685)]
             
             
             if mesh is None:
@@ -388,49 +386,72 @@ class AeroInference:
             if not hasattr(mesh, 'point_data'):
                 raise ValueError("Mesh does not have point_data attribute")
             
-            # p_min = mesh.point_data['p_pred'].min()
-            # p_max = mesh.point_data['p_pred'].max()    
-            # s_min = mesh.point_data['wallShearStress_pred'].min()
-            # s_max = mesh.point_data['wallShearStress_pred'].max()
-            
-            plotter = pv.Plotter(shape=(2, 3), window_size=(1200, 1200))  
-            
+            # Get individual scalar ranges for each subplot independently
+            # This ensures subplots don't affect each other's coloring
+
+            # Pressure: use common range for pred and true (for comparison)
+            p_min = min(mesh["p_pred"].min(), mesh["p"].min())
+            p_max = max(mesh["p_pred"].max(), mesh["p"].max())
+
+            # Pressure error: independent range, symmetric around zero
+            p_err_abs_max = max(abs(mesh["p_error"].min()), abs(mesh["p_error"].max()))
+
+            # Shear stress magnitude: use common range for pred and true
+            s_min = min(mesh["wallShearStress_pred"].min(), mesh["wallShearStress"].min())
+            s_max = max(mesh["wallShearStress_pred"].max(), mesh["wallShearStress"].max())
+
+            # Shear stress error magnitude: independent range, symmetric around zero
+            s_err_abs_max = max(abs(mesh["wallShearStress_error"].min()), abs(mesh["wallShearStress_error"].max()))
+
+            plotter = pv.Plotter(shape=(2, 3), window_size=(1800, 1200), off_screen=True)
+
             plotter.subplot(0, 0)
-            # plotter.add_mesh(mesh, scalars="p_pred", clim=[p_min, p_max])  
-            # plotter.add_mesh(mesh, scalars="p_pred", clim=[mesh.point_data['p_pred'].min(), mesh.point_data['p_pred'].max()])
-            plotter.add_mesh(mesh, scalars="p_pred")
+            plotter.add_mesh(mesh, scalars="p_pred", clim=[p_min, p_max],
+                           cmap='viridis', show_scalar_bar=True,
+                           scalar_bar_args={'title': 'p_pred'}, copy_mesh=True)
             plotter.add_text("Prediction: Pressure", position='upper_left', font_size=12)
             plotter.camera_position = camera_position
-            
+
             plotter.subplot(0, 1)
-            # plotter.add_mesh(mesh, scalars="p", clim=[mesh.point_data['p'].min(), mesh.point_data['p'].max()])
-            plotter.add_mesh(mesh, scalars="p")
-            plotter.add_text("Ground Truth: Pressure", position='upper_left', font_size=12) 
+            plotter.add_mesh(mesh, scalars="p", clim=[p_min, p_max],
+                           cmap='viridis', show_scalar_bar=True,
+                           scalar_bar_args={'title': 'p'}, copy_mesh=True)
+            plotter.add_text("Ground Truth: Pressure", position='upper_left', font_size=12)
             plotter.camera_position = camera_position
-            
+
             plotter.subplot(0, 2)
-            # plotter.add_mesh(mesh, scalars="p_error", clim=[-abs(mesh.point_data['p_pred'].max() - mesh.point_data['p_pred'].min())/10, abs(mesh.point_data['p_pred'].max() - mesh.point_data['p_pred'].min())/10], cmap='bwr')
-            plotter.add_mesh(mesh, scalars="p_error")
+            plotter.add_mesh(mesh, scalars="p_error",
+                           clim=[-p_err_abs_max, p_err_abs_max],
+                           cmap='coolwarm', show_scalar_bar=True,
+                           scalar_bar_args={'title': 'p_error'}, copy_mesh=True)
             plotter.add_text("Error: Pressure", position='upper_left', font_size=12)
             plotter.camera_position = camera_position
-            
+
             plotter.subplot(1, 0)
-            plotter.add_mesh(mesh, scalars="wallShearStress_pred", clim=[mesh.point_data['wallShearStress_pred'].min(), mesh.point_data['wallShearStress_pred'].max()])
-            plotter.add_text("Prediction: Wall Shear Stress", position='upper_left', font_size=12)
+            plotter.add_mesh(mesh, scalars="wallShearStress_pred",
+                           clim=[s_min, s_max], cmap='viridis', show_scalar_bar=True,
+                           scalar_bar_args={'title': 'tau_mag_pred'}, copy_mesh=True)
+            plotter.add_text("Prediction: Wall Shear Stress Mag", position='upper_left', font_size=12)
             plotter.camera_position = camera_position
-            
+
             plotter.subplot(1, 1)
-            plotter.add_mesh(mesh, scalars="wallShearStress", clim=[mesh.point_data['wallShearStress'].min(), mesh.point_data['wallShearStress'].max()])
-            plotter.add_text("Ground Truth: Wall Shear Stress", position='upper_left', font_size=12)
+            plotter.add_mesh(mesh, scalars="wallShearStress",
+                           clim=[s_min, s_max], cmap='viridis', show_scalar_bar=True,
+                           scalar_bar_args={'title': 'tau_mag'}, copy_mesh=True)
+            plotter.add_text("Ground Truth: Wall Shear Stress Mag", position='upper_left', font_size=12)
             plotter.camera_position = camera_position
-            
+
             plotter.subplot(1, 2)
-            plotter.add_mesh(mesh, scalars="wallShearStress_error", clim=[-abs(mesh.point_data['wallShearStress_pred'].max() - mesh.point_data['wallShearStress_pred'].min())/10, abs(mesh.point_data['wallShearStress_pred'].max() - mesh.point_data['wallShearStress_pred'].min())/10], cmap='bwr')
-            plotter.add_text("Error: Wall Shear Stress", position='upper_left', font_size=12)
+            plotter.add_mesh(mesh, scalars="wallShearStress_error",
+                           clim=[-s_err_abs_max, s_err_abs_max],
+                           cmap='coolwarm', show_scalar_bar=True,
+                           scalar_bar_args={'title': 'tau_mag_error'}, copy_mesh=True)
+            plotter.add_text("Error: Wall Shear Stress Mag", position='upper_left', font_size=12)
             plotter.camera_position = camera_position
             
             plotter.link_views()
-            plotter.show()
+            plotter.screenshot(output_path)
+            return True
             
         except Exception as e:
             print(f"Warning: Could not create PyVista plot for {original_file_path}: {e}")

@@ -302,6 +302,9 @@ def plot_adjacency_matrix(
     row, col = edge_index[0], edge_index[1]
     values = np.ones(len(row))
     adj_matrix = coo_matrix((values, (row, col)), shape=(num_nodes, num_nodes))
+    #print sparsity of adj_matrix
+    sparsity = adj_matrix.nnz / (num_nodes * num_nodes)
+    print(f"Adjacency matrix sparsity: {sparsity:.6f}")
 
     fig, ax = plt.subplots(figsize=figsize)
 
@@ -535,5 +538,15 @@ def plot_graph_sparsity(
     plot_graph_statistics(data, title=f"{title} - Statistics", save_path=stats_path)
 
     print(f"\nAll figures saved with prefix: {base_name}")
+    
+    
+def find_linear_layers(model):
+    """
+    Finds and prints the names of all nn.Linear layers in the model.
+    """
+    print("Found the following nn.Linear layers:")
+    for name, module in model.named_modules():
+        if isinstance(module, torch.nn.Linear):
+            print(f"Layer Name: '{name}' \t Weight Shape: {module.weight.shape}")
     
 
