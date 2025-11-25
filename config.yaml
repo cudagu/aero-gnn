@@ -50,18 +50,6 @@ model:
     dropout: 0.0
     do_concat_trick: False
 
-  weightedgraphnet:
-    processor_size: 15
-    activation_fn: "relu"
-    hidden_dim: 128
-    aggregation: "add"
-    num_hidden_layers_decoder: 2
-    num_hidden_layers_node_encoder: 2
-    num_hidden_layers_edge_encoder: 2
-    num_hidden_layers_edge_weight: 2
-    num_hidden_layers_node_update: 2
-    dropout: 0.0
-
   fouriermgn:
     processor_size: 15
     activation_fn: "relu"
@@ -121,36 +109,6 @@ model:
     fourier_dim: 0  # Dimension of Fourier features (if enabled)
     condition_dim: 0  # Dimension of global condition vector
 
-  graphspectral_transolver:
-    n_layers: 6  # Number of transformer blocks
-    n_hidden: 256  # Hidden dimension
-    n_head: 8  # Number of attention heads
-    dropout: 0.0
-    act: "gelu"  # Activation function (gelu recommended for transformers)
-    mlp_ratio: 4  # MLP expansion ratio (4x is standard)
-    slice_num: 32  # Number of eidetic states (16-64 range)
-    spectral_dim: 8  # Number of Laplacian eigenvectors to use (4-16 range)
-    spectral_weight: 0.5  # Initial weight for spectral features (0.0=feature-only, 1.0=spectral-only)
-    use_checkpoint: True  # Gradient checkpointing to save memory
-    fourier_features: False  # Apply Fourier encoding to positions
-    fourier_dim: 0  # Dimension of Fourier features (if enabled)
-    laplacian_norm: "sym"  # Laplacian normalization: 'sym' for symmetric, 'rw' for random walk
-
-  graphdistance_transolver:
-    n_layers: 6  # Number of transformer blocks
-    n_hidden: 256  # Hidden dimension
-    n_head: 8  # Number of attention heads
-    dropout: 0.0
-    act: "gelu"  # Activation function (gelu recommended for transformers)
-    mlp_ratio: 4  # MLP expansion ratio (4x is standard)
-    slice_num: 32  # Number of eidetic states (16-64 range)
-    distance_bias_type: "exp"  # Type of distance bias: 'exp' (exponential), 'linear', 'quadratic'
-    learnable_bias: True  # Whether distance bias strength is learnable during training
-    max_hops: 5  # Maximum hop distance to precompute (nodes beyond this are marked as max_hops+1)
-    use_checkpoint: True  # Gradient checkpointing to save memory
-    fourier_features: False  # Apply Fourier encoding to positions
-    fourier_dim: 0  # Dimension of Fourier features (if enabled)
-
   mgntransolver:
     processor_size: 6  # Number of MGN+Transolver block pairs
     message_passing_per_processor: 1  # Number of MGN layers per block
@@ -178,6 +136,65 @@ model:
     num_hidden_layers_decoder: 1
     dropout: 0.0
 
+  gcntransolver:
+    processor_size: 6  # Number of GCN+Transolver block pairs
+    gcn_per_processor: 1  # Number of GCN layers per block
+    activation_fn: "gelu"  # Activation for GCN layers
+    hidden_dim: 256  # Hidden dimension for all components
+    num_hidden_layers_node_encoder: 1
+    num_hidden_layers_decoder: 1
+    dropout: 0.0
+    n_head: 8  # Number of attention heads in Transolver
+    slice_num: 32  # Number of eidetic states in Transolver (16-64 range)
+    act: "gelu"  # Activation function for Transolver (gelu recommended for transformers)
+    mlp_ratio: 4  # MLP expansion ratio for Transolver (4x is standard)
+    use_checkpoint: True  # Gradient checkpointing to save memory
+    use_layer_norm: True  # Use layer normalization in GCN blocks
+
+  poolmgntransolver:
+    processor_size: 6  # Number of MGN+Transolver block pairs
+    message_passing_per_processor: 1  # Number of MGN layers per block
+    activation_fn: "gelu"  # Activation for MGN layers
+    hidden_dim: 256  # Hidden dimension for all components
+    num_hidden_layers_node_processor: 1
+    num_hidden_layers_edge_processor: 1
+    num_hidden_layers_node_encoder: 1
+    num_hidden_layers_edge_encoder: 1
+    num_hidden_layers_decoder: 1
+    aggregation: "add"  # Aggregation method for message passing
+    dropout: 0.0
+    do_concat_trick: True  # Whether to concatenate initial features before decoding
+    n_head: 8  # Number of attention heads in Transolver
+    slice_num: 32  # Number of eidetic states in Transolver (16-64 range)
+    act: "gelu"  # Activation function for Transolver (gelu recommended for transformers)
+    mlp_ratio: 4  # MLP expansion ratio for Transolver (4x is standard)
+    use_checkpoint: True  # Gradient checkpointing to save memory
+    global_pool_method: "mean"  # Global pooling method: "mean", "max", or "add"
+    num_hidden_layers_global_encoder: 1  # Number of layers in global encoder
+    global_dim: 256  # Dimension of global pooled features
+
+  fouriermgntransolver:
+    processor_size: 6  # Number of MGN+Transolver block pairs
+    message_passing_per_processor: 1  # Number of MGN layers per block
+    activation_fn: "gelu"  # Activation for MGN layers
+    hidden_dim: 256  # Hidden dimension for all components
+    num_hidden_layers_node_processor: 1
+    num_hidden_layers_edge_processor: 1
+    num_hidden_layers_node_encoder: 1
+    num_hidden_layers_edge_encoder: 1
+    num_hidden_layers_decoder: 1
+    aggregation: "add"  # Aggregation method for message passing
+    dropout: 0.0
+    do_concat_trick: True  # Whether to concatenate initial features before decoding
+    n_head: 8  # Number of attention heads in Transolver
+    slice_num: 32  # Number of eidetic states in Transolver (16-64 range)
+    act: "gelu"  # Activation function for Transolver (gelu recommended for transformers)
+    mlp_ratio: 4  # MLP expansion ratio for Transolver (4x is standard)
+    use_checkpoint: True  # Gradient checkpointing to save memory
+    fourier_features_dim: 2  # Number of spatial dimensions to apply Fourier encoding (2 for 2D, 3 for 3D)
+    fourier_freq_start: -3  # Starting frequency index (2^-3)
+    fourier_freq_length: 7  # Number of frequencies to use
+
 
 # Training configuration
 training:
@@ -201,7 +218,7 @@ training:
     shuffle: True
     random_seed: 42
     precision: "bfloat16"  # options: "single", "double", "bfloat16"
-    device: "cpu"
+    device: "cuda"
     loss_function: "MSELoss"
     early_stopping: True
     patience: 200
@@ -220,10 +237,10 @@ experiments:
     dataset: airfoil_2d
     model: mlpnet
     training: default
-    mach: [0.86]
-    alpha: [3]
+    mach: [0.7, 0.86]
+    alpha: [-3, 6]
     data_dir: /home/hakan/MEGA/GNN/data/Airfoil_2d/raw
-    batch_size: 32
+    batch_size: 128
     epochs: 1000
     random_seed: 402
     test_split: 0.2
@@ -232,10 +249,10 @@ experiments:
     dataset: airfoil_2d
     model: meshgraphnet
     training: default
-    mach: [0.86]
-    alpha: [3]
+    mach: [0.7, 0.86]
+    alpha: [-3, 6]
     data_dir: /home/hakan/MEGA/GNN/data/Airfoil_2d/raw
-    batch_size: 32
+    batch_size: 64
     epochs: 1000
     random_seed: 402
     test_split: 0.2
@@ -244,10 +261,10 @@ experiments:
     dataset: airfoil_2d
     model: poolMGN
     training: default
-    mach: [0.86]
-    alpha: [3]
+    mach: [0.7, 0.86]
+    alpha: [-3, 6]
     data_dir: /home/hakan/MEGA/GNN/data/Airfoil_2d/raw
-    batch_size: 32
+    batch_size: 64
     epochs: 1000
     random_seed: 402
     test_split: 0.2
@@ -256,10 +273,10 @@ experiments:
     dataset: airfoil_2d
     model: fouriermgn
     training: default
-    mach: [0.86]
-    alpha: [3]
+    mach: [0.7, 0.86]
+    alpha: [-3, 6]
     data_dir: /home/hakan/MEGA/GNN/data/Airfoil_2d/raw
-    batch_size: 32
+    batch_size: 128
     epochs: 1000
     random_seed: 402
     test_split: 0.2
@@ -281,10 +298,10 @@ experiments:
     dataset: airfoil_2d
     model: transolver
     training: default
-    mach: [0.86]
-    alpha: [3]
+    mach: [0.7, 0.86]
+    alpha: [-3, 6]
     data_dir: /home/hakan/MEGA/GNN/data/Airfoil_2d/raw
-    batch_size: 16  # Transolver can use larger batches than BSMS
+    batch_size: 256
     epochs: 1000
     random_seed: 402
     test_split: 0.2
@@ -293,28 +310,14 @@ experiments:
     slice_num: 32
     learning_rate: 0.0003  # Lower LR for transformer
 
-  airfoil_gcn:
-    dataset: airfoil_2d
-    model: gcn
-    training: default
-    mach: [0.86]
-    alpha: [3]
-    data_dir: /home/hakan/MEGA/GNN/data/Airfoil_2d/raw
-    batch_size: 32
-    epochs: 1000
-    random_seed: 402
-    test_split: 0.2
-    hidden_dim: 128
-    processor_size: 15
-
   airfoil_mgntransolver:
     dataset: airfoil_2d
     model: mgntransolver
     training: default
-    mach: [0.86]
-    alpha: [3]
+    mach: [0.7, 0.86]
+    alpha: [-3, 6]
     data_dir: /home/hakan/MEGA/GNN/data/Airfoil_2d/raw
-    batch_size: 16
+    batch_size: 64
     epochs: 1000
     random_seed: 402
     test_split: 0.2
@@ -325,42 +328,81 @@ experiments:
     slice_num: 32
     learning_rate: 0.0003
 
-  airfoil_graphspectral_transolver:
+  airfoil_gcn:
     dataset: airfoil_2d
-    model: graphspectral_transolver
+    model: gcn
     training: default
     mach: [0.86]
     alpha: [3]
     data_dir: /home/hakan/MEGA/GNN/data/Airfoil_2d/raw
-    batch_size: 16  # Graph spectral transolver can use larger batches
+    batch_size: 1
     epochs: 1000
     random_seed: 402
     test_split: 0.2
-    n_hidden: 256
-    n_layers: 6
-    slice_num: 4
-    spectral_dim: 2
-    spectral_weight: 0.5
-    learning_rate: 0.0003  # Lower LR for transformer
+    hidden_dim: 128
+    processor_size: 2
 
-  airfoil_graphdistance_transolver:
+  
+
+  airfoil_gcntransolver:
     dataset: airfoil_2d
-    model: graphdistance_transolver
+    model: gcntransolver
     training: default
     mach: [0.86]
     alpha: [3]
     data_dir: /home/hakan/MEGA/GNN/data/Airfoil_2d/raw
-    batch_size: 16  # Graph distance transolver can use larger batches
+    batch_size: 16
     epochs: 1000
     random_seed: 402
     test_split: 0.2
-    n_hidden: 256
-    n_layers: 6
+    processor_size: 6
+    gcn_per_processor: 1
+    hidden_dim: 256
+    n_head: 8
     slice_num: 32
-    distance_bias_type: "exp"
-    learnable_bias: True
-    max_hops: 5
-    learning_rate: 0.0003  # Lower LR for transformer
+    learning_rate: 0.0003
+
+  airfoil_poolmgntransolver:
+    dataset: airfoil_2d
+    model: poolmgntransolver
+    training: default
+    mach: [0.7, 0.86]
+    alpha: [-3, 6]
+    data_dir: /home/hakan/MEGA/GNN/data/Airfoil_2d/raw
+    batch_size: 64
+    epochs: 1000
+    random_seed: 402
+    test_split: 0.2
+    processor_size: 6
+    message_passing_per_processor: 1
+    hidden_dim: 256
+    n_head: 8
+    slice_num: 32
+    global_pool_method: "mean"
+    global_dim: 256
+    learning_rate: 0.0003
+
+  airfoil_fouriermgntransolver:
+    dataset: airfoil_2d
+    model: fouriermgntransolver
+    training: default
+    mach: [0.7, 0.86]
+    alpha: [-3, 6]
+    data_dir: /home/hakan/MEGA/GNN/data/Airfoil_2d/raw
+    batch_size: 64
+    epochs: 1000
+    random_seed: 402
+    test_split: 0.2
+    processor_size: 6
+    message_passing_per_processor: 1
+    hidden_dim: 256
+    n_head: 8
+    slice_num: 32
+    fourier_features_dim: 2  # 2D airfoil (x, y)
+    fourier_freq_start: -3
+    fourier_freq_length: 7
+    learning_rate: 0.0003
+
 
   ahmedBody_bsms_mgn:
     dataset: ahmed_body
@@ -460,14 +502,74 @@ experiments:
     slice_num: 64  # More eidetic states for larger 3D mesh
     learning_rate: 0.0002
     profiling: True
-  
+
+  ahmedBody_gcntransolver:
+    dataset: ahmed_body
+    model: gcntransolver
+    training: default
+    data_dir: /home/hakan/MEGA/GNN/data/ahmedBody/raw
+    batch_size: 1
+    epochs: 50
+    train_num_samples: 50
+    val_num_samples: 5
+    test_num_samples: 5
+    processor_size: 6
+    gcn_per_processor: 1
+    hidden_dim: 128  # Smaller for memory efficiency on 3D
+    n_head: 8
+    slice_num: 64  # More eidetic states for larger 3D mesh
+    learning_rate: 0.0002
+
+  ahmedBody_poolmgntransolver:
+    dataset: ahmed_body
+    model: poolmgntransolver
+    training: default
+    data_dir: /home/hakan/MEGA/GNN/data/ahmedBody/raw
+    batch_size: 2
+    epochs: 500
+    train_num_samples: 50
+    val_num_samples: 5
+    test_num_samples: 5
+    hidden_dim: 128  # Smaller for memory efficiency on 3D
+    n_head: 8
+    slice_num: 64  # More eidetic states for larger 3D mesh
+    global_pool_method: "mean"
+    global_dim: 128
+    learning_rate: 0.0002
+    profiling: False
+
+  ahmedBody_fouriermgntransolver:
+    dataset: ahmed_body
+    model: fouriermgntransolver
+    training: default
+    data_dir: /home/hakan/MEGA/GNN/data/ahmedBody/raw
+    batch_size: 2
+    epochs: 500
+    train_num_samples: 50
+    val_num_samples: 5
+    test_num_samples: 5
+    hidden_dim: 128  # Smaller for memory efficiency on 3D
+    n_head: 8
+    slice_num: 64  # More eidetic states for larger 3D mesh
+    fourier_features_dim: 3  # 3D Ahmed body (x, y, z)
+    fourier_freq_start: -3
+    fourier_freq_length: 7
+    learning_rate: 0.0002
+    profiling: False
+
 
   ahmedBody_gcn:
     dataset: ahmed_body
     model: gcn
     training: default
-    data_dir: /home/idb30211
-    batch_size: 50
+    data_dir: /home/hakan/MEGA/GNN/data/ahmedBody/raw
+    batch_size: 1
+    processor_size: 2
+    train_num_samples: 50
+    val_num_samples: 5
+    test_num_samples: 5
+
+
 
   
 

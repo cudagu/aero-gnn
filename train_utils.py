@@ -66,6 +66,18 @@ def train(model, loader, optimizer, loss_fn, device, use_amp=False, amp_dtype=No
                     # MGNTransolver combines MGN layers with Transolver blocks
                     pred = model(batch.x, batch.edge_attr, batch.edge_index, batch.batch)
 
+                elif model_class == 'poolMGNTransolver':
+                    # poolMGNTransolver combines MGN layers with Transolver blocks and global pooling
+                    pred = model(batch.x, batch.edge_attr, batch.edge_index, batch.batch)
+
+                elif model_class == 'FourierMGNTransolver':
+                    # FourierMGNTransolver combines Fourier encoding with MGN layers and Transolver blocks
+                    pred = model(batch.x, batch.edge_attr, batch.edge_index, batch.batch)
+
+                elif model_class == 'GCNTransolver':
+                    # GCNTransolver combines GCN layers with Transolver blocks
+                    pred = model(batch.x, batch.edge_index, batch.batch)
+
                 elif model_class == 'TransolverAero':
                     # Transolver uses batch tensor for PyG batching
                     pred = model(batch.x, batch.edge_attr, batch.edge_index, batch.batch)
@@ -115,6 +127,18 @@ def train(model, loader, optimizer, loss_fn, device, use_amp=False, amp_dtype=No
             elif model_class == 'MGNTransolver':
                 # MGNTransolver combines MGN layers with Transolver blocks
                 pred = model(batch.x, batch.edge_attr, batch.edge_index, batch.batch)
+
+            elif model_class == 'poolMGNTransolver':
+                # poolMGNTransolver combines MGN layers with Transolver blocks and global pooling
+                pred = model(batch.x, batch.edge_attr, batch.edge_index, batch.batch)
+
+            elif model_class == 'FourierMGNTransolver':
+                # FourierMGNTransolver combines Fourier encoding with MGN layers and Transolver blocks
+                pred = model(batch.x, batch.edge_attr, batch.edge_index, batch.batch)
+
+            elif model_class == 'GCNTransolver':
+                # GCNTransolver combines GCN layers with Transolver blocks
+                pred = model(batch.x, batch.edge_index, batch.batch)
 
             elif model_class == 'TransolverAero':
                 # Transolver uses batch tensor for PyG batching
@@ -207,6 +231,18 @@ def evaluate(model, loader, loss_fn, device, use_amp=False, amp_dtype=None, prof
                     # MGNTransolver combines MGN layers with Transolver blocks
                     pred = model(batch.x, batch.edge_attr, batch.edge_index, batch.batch)
 
+                elif model_class == 'poolMGNTransolver':
+                    # poolMGNTransolver combines MGN layers with Transolver blocks and global pooling
+                    pred = model(batch.x, batch.edge_attr, batch.edge_index, batch.batch)
+
+                elif model_class == 'FourierMGNTransolver':
+                    # FourierMGNTransolver combines Fourier encoding with MGN layers and Transolver blocks
+                    pred = model(batch.x, batch.edge_attr, batch.edge_index, batch.batch)
+
+                elif model_class == 'GCNTransolver':
+                    # GCNTransolver combines GCN layers with Transolver blocks
+                    pred = model(batch.x, batch.edge_index, batch.batch)
+
                 elif model_class == 'GCN':
                     # GCN only needs node features and edge_index
                     pred = model(batch.x, batch.edge_index)
@@ -251,6 +287,18 @@ def evaluate(model, loader, loss_fn, device, use_amp=False, amp_dtype=None, prof
             elif model_class == 'MGNTransolver':
                 # MGNTransolver combines MGN layers with Transolver blocks
                 pred = model(batch.x, batch.edge_attr, batch.edge_index, batch.batch)
+
+            elif model_class == 'poolMGNTransolver':
+                # poolMGNTransolver combines MGN layers with Transolver blocks and global pooling
+                pred = model(batch.x, batch.edge_attr, batch.edge_index, batch.batch)
+
+            elif model_class == 'FourierMGNTransolver':
+                # FourierMGNTransolver combines Fourier encoding with MGN layers and Transolver blocks
+                pred = model(batch.x, batch.edge_attr, batch.edge_index, batch.batch)
+
+            elif model_class == 'GCNTransolver':
+                # GCNTransolver combines GCN layers with Transolver blocks
+                pred = model(batch.x, batch.edge_index, batch.batch)
 
             elif model_class == 'TransolverAero':
                 # Transolver uses batch tensor for PyG batching
@@ -518,6 +566,68 @@ def create_model(model_config: dict,
             use_checkpoint=model_config.get('use_checkpoint', True),
         )
 
+    elif model_name == 'poolmgntransolver':
+        from models.poolmgntransolver import poolMGNTransolver
+        model = poolMGNTransolver(
+            input_node_dim=input_node_dim,
+            input_edge_dim=input_edge_dim,
+            output_node_dim=output_node_dim,
+            processor_size=model_config.get('processor_size', 6),
+            message_passing_per_processor=model_config.get('message_passing_per_processor', 1),
+            activation_fn=model_config.get('activation_fn', 'gelu'),
+            num_hidden_layers_node_processor=model_config.get('num_hidden_layers_node_processor', 1),
+            num_hidden_layers_edge_processor=model_config.get('num_hidden_layers_edge_processor', 1),
+            hidden_dim_processor=model_config.get('hidden_dim', 256),
+            num_hidden_layers_node_encoder=model_config.get('num_hidden_layers_node_encoder', 1),
+            hidden_dim_node_encoder=model_config.get('hidden_dim', 256),
+            num_hidden_layers_edge_encoder=model_config.get('num_hidden_layers_edge_encoder', 1),
+            hidden_dim_edge_encoder=model_config.get('hidden_dim', 256),
+            aggregation=model_config.get('aggregation', 'add'),
+            hidden_dim_decoder=model_config.get('hidden_dim', 256),
+            num_hidden_layers_decoder=model_config.get('num_hidden_layers_decoder', 1),
+            dropout=model_config.get('dropout', 0.0),
+            do_concat_trick=model_config.get('do_concat_trick', True),
+            n_head=model_config.get('n_head', 8),
+            slice_num=model_config.get('slice_num', 32),
+            act=model_config.get('act', 'gelu'),
+            mlp_ratio=model_config.get('mlp_ratio', 4),
+            use_checkpoint=model_config.get('use_checkpoint', True),
+            global_pool_method=model_config.get('global_pool_method', 'mean'),
+            num_hidden_layers_global_encoder=model_config.get('num_hidden_layers_global_encoder', 1),
+            global_dim=model_config.get('global_dim', 256),
+        )
+
+    elif model_name == 'fouriermgntransolver':
+        from models.fouriermgntransolver import FourierMGNTransolver
+        model = FourierMGNTransolver(
+            input_node_dim=input_node_dim,
+            input_edge_dim=input_edge_dim,
+            output_node_dim=output_node_dim,
+            processor_size=model_config.get('processor_size', 6),
+            message_passing_per_processor=model_config.get('message_passing_per_processor', 1),
+            activation_fn=model_config.get('activation_fn', 'gelu'),
+            num_hidden_layers_node_processor=model_config.get('num_hidden_layers_node_processor', 1),
+            num_hidden_layers_edge_processor=model_config.get('num_hidden_layers_edge_processor', 1),
+            hidden_dim_processor=model_config.get('hidden_dim', 256),
+            num_hidden_layers_node_encoder=model_config.get('num_hidden_layers_node_encoder', 1),
+            hidden_dim_node_encoder=model_config.get('hidden_dim', 256),
+            num_hidden_layers_edge_encoder=model_config.get('num_hidden_layers_edge_encoder', 1),
+            hidden_dim_edge_encoder=model_config.get('hidden_dim', 256),
+            aggregation=model_config.get('aggregation', 'add'),
+            hidden_dim_decoder=model_config.get('hidden_dim', 256),
+            num_hidden_layers_decoder=model_config.get('num_hidden_layers_decoder', 1),
+            dropout=model_config.get('dropout', 0.0),
+            do_concat_trick=model_config.get('do_concat_trick', True),
+            n_head=model_config.get('n_head', 8),
+            slice_num=model_config.get('slice_num', 32),
+            act=model_config.get('act', 'gelu'),
+            mlp_ratio=model_config.get('mlp_ratio', 4),
+            use_checkpoint=model_config.get('use_checkpoint', True),
+            fourier_features_dim=model_config.get('fourier_features_dim', 2),
+            fourier_freq_start=model_config.get('fourier_freq_start', -3),
+            fourier_freq_length=model_config.get('fourier_freq_length', 7),
+        )
+
     elif model_name == 'gcn':
         from models.gcn import GCN
         model = GCN(
@@ -533,8 +643,30 @@ def create_model(model_config: dict,
             dropout=model_config.get('dropout', 0.0)
         )
 
+    elif model_name == 'gcntransolver':
+        from models.gcntransolver import GCNTransolver
+        model = GCNTransolver(
+            input_node_dim=input_node_dim,
+            output_node_dim=output_node_dim,
+            processor_size=model_config.get('processor_size', 15),
+            gcn_per_processor=model_config.get('gcn_per_processor', 1),
+            activation_fn=model_config.get('activation_fn', 'relu'),
+            hidden_dim_processor=model_config.get('hidden_dim', 128),
+            num_hidden_layers_node_encoder=model_config.get('num_hidden_layers_node_encoder', 1),
+            hidden_dim_node_encoder=model_config.get('hidden_dim', 128),
+            hidden_dim_decoder=model_config.get('hidden_dim', 128),
+            num_hidden_layers_decoder=model_config.get('num_hidden_layers_decoder', 1),
+            dropout=model_config.get('dropout', 0.0),
+            n_head=model_config.get('n_head', 8),
+            slice_num=model_config.get('slice_num', 32),
+            act=model_config.get('act', 'gelu'),
+            mlp_ratio=model_config.get('mlp_ratio', 4),
+            use_checkpoint=model_config.get('use_checkpoint', True),
+            use_layer_norm=model_config.get('use_layer_norm', True),
+        )
+
     else:
-        available_models = ['MLP', 'mlpnet', 'meshgraphnet', 'poolMGN', 'fouriermgn', 'trial1', 'Trial1', 'bsms_mgn', 'weightedgraphnet', 'transolver', 'graphspectral_transolver', 'graphdistance_transolver', 'mgntransolver', 'gcn']
+        available_models = ['MLP', 'mlpnet', 'meshgraphnet', 'poolMGN', 'fouriermgn', 'trial1', 'Trial1', 'bsms_mgn', 'weightedgraphnet', 'transolver', 'graphspectral_transolver', 'graphdistance_transolver', 'mgntransolver', 'poolmgntransolver', 'fouriermgntransolver', 'gcn', 'gcntransolver']
         raise ValueError(
             f"Unknown model type: '{model_name}'. "
             f"Available models: {', '.join(available_models)}"

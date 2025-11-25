@@ -134,7 +134,7 @@ def main(params):
                          input_edge_dim=input_edge_dim,
                          output_node_dim=output_node_dim,
                          pos_dim=pos_dim)
-    # print(model)
+    print(model)
 
     # Convert model to correct precision
     # Note: For bfloat16 with AMP, we keep the model in float32
@@ -224,9 +224,9 @@ def main(params):
             current_lr = optimizer.param_groups[0]['lr']
             iterator.set_postfix(Loss=train_loss, Val_Loss=val_loss, lr=current_lr)
             
-            if epoch % 5 == 0:
-                print(f"Epoch {epoch}: Logging singular values...")
-                log_singular_values(model, epoch)
+            # if epoch % 5 == 0:
+            #     print(f"Epoch {epoch}: Logging singular values...")
+            #     log_singular_values(model, epoch)
             
             # Early stopping
             if training_config.get('early_stopping'):
@@ -266,7 +266,7 @@ def main(params):
         # print(f"Normalization stats saved to {save_dir}/normalization_stats.pt")
         
         #save svd plots
-        save_svd_plots(os.path.join(save_dir, "svd_analysis"))
+        # save_svd_plots(os.path.join(save_dir, "svd_analysis"))
         
         # Save training configuration and parameters
         import json

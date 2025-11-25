@@ -3,7 +3,7 @@ import torch_geometric
 import glob
 import os
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Tuple
 import random
 from collections import defaultdict
 import pyvista as pv
@@ -11,6 +11,7 @@ from torch_geometric.utils import is_undirected, to_undirected
 from torch_geometric.data import Dataset
 from utils import plot_adjacency_matrix
 import networkx as nx
+import numpy as np
 
 from tqdm import tqdm
 
@@ -52,7 +53,65 @@ class AeroDataset(Dataset):
         # print(f"Clustering coefficients: {clustering_coeffs}")
 
         # plot_adjacency_matrix(self.data_list[0], title=f"{dataset_type} Sample Graph After Reordering", save_path=f"{dataset_type}_sample_graph_reordered")
-    
+
+    def convert_edge_index_to_bsr(self, edge_index: torch.Tensor, num_nodes: int,
+                                   edge_attr: Optional[torch.Tensor] = None,
+                                   block_size: int = 32) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+        """Convert edge_index to Block Compressed Sparse Row (BSR) format.
+
+        BSR format stores sparse matrices in blocks for better memory access patterns.
+        For block_size=1, this is equivalent to standard CSR format.
+
+        Args:
+            edge_index: [2, num_edges] tensor with source and target indices
+            num_nodes: Total number of nodes in the graph
+            edge_attr: [num_edges, edge_dim] optional edge attributes to reorder
+            block_size: Block size for BSR format (default=1 for CSR)
+
+        Returns:
+            bsr_crow: [num_node_blocks + 1] row pointer array indicating where each row's blocks start
+            bsr_col: [num_blocks] column indices for each block
+            sorted_edge_indices: [num_edges] indices to reorder original edges to BSR order
+            reordered_edge_attr: [num_edges, edge_dim] edge attributes reordered to match BSR structure (if edge_attr provided)
+        """
+        device = edge_index.device
+        dtype_idx = edge_index.dtype
+
+        # Ensure edge_index is [2, num_edges] format
+        if edge_index.shape[0] != 2:
+            raise ValueError(f"edge_index must have shape [2, num_edges], got {edge_index.shape}")
+
+        src, dst = edge_index[0], edge_index[1]
+        num_edges = edge_index.shape[1]
+
+        # Sort edges by (source, destination) for CSR/BSR ordering
+        # This groups all edges from the same source node together
+        sorted_indices = torch.argsort(src * num_nodes + dst)
+        src_sorted = src[sorted_indices]
+        dst_sorted = dst[sorted_indices]
+
+        # Compute row pointers (crow indices)
+        # crow[i] indicates the starting position of edges from node i
+        # crow has length num_nodes + 1, where crow[-1] = num_edges
+        bsr_crow = torch.zeros(num_nodes + 1, dtype=dtype_idx, device=device)
+
+        # Count edges per source node using bincount
+        # This is equivalent to computing the histogram of source nodes
+        edge_counts = torch.bincount(src_sorted, minlength=num_nodes)
+
+        # Cumulative sum to get crow indices
+        bsr_crow[1:] = torch.cumsum(edge_counts, dim=0)
+
+        # Column indices are just the sorted destination nodes
+        bsr_col = dst_sorted
+
+        # Reorder edge attributes if provided
+        reordered_edge_attr = None
+        if edge_attr is not None:
+            reordered_edge_attr = edge_attr[sorted_indices]
+
+        return bsr_crow, bsr_col, sorted_indices, reordered_edge_attr
+
     def compute_edge_attr(self, data):
         """Compute edge attributes based on node positions.
         
